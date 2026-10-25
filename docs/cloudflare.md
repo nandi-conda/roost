@@ -29,20 +29,21 @@ latha.org zone. CI does not run `sync-identities`, since that needs the
 operator token, so after a deploy that moves DIDs run it locally (or use
 `just deploy`, which does both).
 
-Handles resolve over DNS: each needs a TXT record `_atproto.<handle>` =
-`"did=<did>"` in the latha.org zone, since `*.roost.latha.org` has no TLS
-certificate (Universal SSL covers only one level of subdomain, so an HTTPS
-`/.well-known/atproto-did` on each handle host would need Advanced Certificate
-Manager). The Worker writes the record itself on signup and on every handle
-change once it holds a Cloudflare API token with **Zone · DNS · Edit** on
-`latha.org` (`CLOUDFLARE_ZONE_ID` is already a var):
+Handles resolve over HTTPS. The zone has an advanced certificate for
+`*.roost.latha.org`, a proxied wildcard DNS record `*.roost.latha.org` (AAAA
+`100::`) points every handle host at Cloudflare, and the Worker route
+`*.roost.latha.org/.well-known/atproto-did` answers with the DID the directory
+holds for that host. So a new signup's handle verifies as soon as it exists,
+with no per-account DNS record.
+
+Accounts from before that also have a TXT record `_atproto.<handle>` =
+`"did=<did>"`. The Worker writes one on signup and on every handle change
+only when it holds a Cloudflare API token with **Zone · DNS · Edit** on
+`latha.org` (`CLOUDFLARE_ZONE_ID` is already a var); prod runs without it:
 
 ```sh
 pixi run cf-dns-token        # paste the token; pixi run cf-drop-dns-token removes it
 ```
-
-Without it the Worker skips that step and a new handle does not verify until
-someone writes its record by hand.
 
 ## Operator routes
 

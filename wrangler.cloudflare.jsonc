@@ -15,7 +15,12 @@
   "assets": { "directory": "./public" },
   "routes": [
     { "pattern": "roost.latha.org", "custom_domain": true },
-    { "pattern": "rookery.latha.org", "custom_domain": true }
+    { "pattern": "rookery.latha.org", "custom_domain": true },
+    // Every handle resolves over HTTPS: a proxied wildcard *.roost.latha.org
+    // DNS record (AAAA 100::) and the zone's advanced cert for *.roost.latha.org
+    // send <name>.roost.latha.org/.well-known/atproto-did here, so a new signup
+    // needs no per-account _atproto TXT record.
+    { "pattern": "*.roost.latha.org/.well-known/atproto-did", "zone_name": "latha.org" }
   ],
   "durable_objects": {
     "bindings": [
