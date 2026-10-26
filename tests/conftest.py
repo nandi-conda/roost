@@ -17,6 +17,7 @@ from roost import app as roost_app  # noqa: E402
 from roost.oauth import client_metadata, permission_sets  # noqa: E402
 from roost import access, directory  # noqa: E402
 from roost.humans import store as human_store  # noqa: E402
+from roost.mcp import store as mcp_store  # noqa: E402
 from roost.spaces import auth as space_auth  # noqa: E402
 
 ORIGIN = "https://rookery.test"
@@ -42,6 +43,7 @@ def _reset_module_state():
     access.reset_jwks_cache()
     directory._idempotency_ensured = False
     human_store._initialized = False
+    mcp_store._initialized = False
     space_auth._revocations_ensured = False
     permission_sets._initialized = False
     roost_app._requested_crawl = False

@@ -35,6 +35,7 @@ from .encoding import b64url_decode, b64url_encode, sha256_b64url, sha256_hex
 from .handle_dns import HandleDnsError, publish_handle_dns
 from .humans import store as human_store
 from .humans.pages import render_consent_page
+from .mcp import store as mcp_store
 from .handle_policy import is_reserved_or_blocked
 from .jwt import JwtFormatError, parse_jwt, rs256_verify
 from .keys import P256Keypair, Secp256k1Keypair
@@ -202,10 +203,13 @@ def with_query(url: str, params: dict) -> str:
 # Auth
 
 async def resolve_dpop_auth(request, env, method: str, sessions: bool = True) -> dict:
-    """{did, do_id, kind: "wm" | "oauth" | "session", scope?} for the request's credentials."""
+    """{did, do_id, kind: "wm" | "oauth" | "session" | "mcp", scope?} for the request's credentials."""
     authorization = request.header("authorization") or ""
     if sessions and authorization[:7].lower() == "bearer ":
-        return await _resolve_password_session(env, authorization[7:].strip())
+        token = authorization[7:].strip()
+        if mcp_store.is_token(token):
+            return await _resolve_mcp_token(env, token)
+        return await _resolve_password_session(env, token)
     access_token = extract_bearer_token(authorization)
     if not access_token:
         raise AuthError("Missing DPoP authorization")
@@ -233,6 +237,14 @@ async def _resolve_password_session(env, token: str) -> dict:
         expired = "expired" in str(exc)
         raise AuthFailure(error("ExpiredToken" if expired else "InvalidToken", str(exc), 400 if expired else 401)) from exc
     return {"did": session["did"], "do_id": session["do_id"], "kind": "session", "scope": None}
+
+
+async def _resolve_mcp_token(env, token: str) -> dict:
+    try:
+        resolved = await mcp_store.resolve_token(env.db, token)
+    except mcp_store.TokenError as exc:
+        raise AuthFailure(error("InvalidToken", str(exc), 401)) from exc
+    return dict(resolved, kind="mcp", scope=None)
 
 
 def auth_failure(exc: Exception, oauth_token_error: bool = True) -> Response:
@@ -999,6 +1011,20 @@ async def provision_account(env, handle: str, invite: str | None, jwk_thumbprint
     return did
 
 
+async def check_signup_invite(env, ref) -> str | None:
+    """The invite token an agent signup spends: required on commons, None elsewhere.
+    Raises AuthFailure for a missing or spent invite."""
+    if not is_commons(env):
+        return None
+    await directory.init_directory(env.db)
+    invite = _extract_invite_token(ref)
+    if not invite:
+        raise AuthFailure(error("InviteRequired", "A valid invite ref is required for enrollment.", 403))
+    if not await directory.is_invite_available(env.db, invite):
+        raise AuthFailure(error("InviteInvalid", "Invite is invalid or already spent.", 403))
+    return invite
+
+
 @router.post("/api/signup")
 async def signup(request, env):
     body = await read_json(request)
@@ -1027,15 +1053,7 @@ async def signup(request, env):
     except AuthError as exc:
         return error("InvalidToken", str(exc), 400)
 
-    invite = None
-    if is_commons(env):
-        await directory.init_directory(env.db)
-        invite = _extract_invite_token(body.get("ref"))
-        if not invite:
-            return error("InviteRequired", "A valid invite ref is required for enrollment.", 403)
-        if not await directory.is_invite_available(env.db, invite):
-            return error("InviteInvalid", "Invite is invalid or already spent.", 403)
-
+    invite = await check_signup_invite(env, body.get("ref"))
     handle = await check_handle_name(env, submitted.lower())
     did = await provision_account(env, handle, invite, proof["thumbprint"])
     return json_response({"did": did, "handle": handle, "access_token": body["access_token"], "token_type": "DPoP"})
@@ -1645,4 +1663,5 @@ async def subscribe_repos(request, env):
 from .spaces import routes as _space_routes  # noqa: E402,F401
 from .humans import routes as _human_routes  # noqa: E402,F401
 from .humans import account as _account_routes  # noqa: E402,F401
+from .mcp import routes as _mcp_routes  # noqa: E402,F401
 from .humans import proxy as _proxy_routes  # noqa: E402,F401  (last: catches unserved /xrpc methods)
