@@ -183,6 +183,9 @@ async def test_human_password_consent_on_oauth_authorize(client, env):
     query = urlencode({"request_uri": par["request_uri"], "client_id": par["client_id"]})
     page = await client.get(f"/oauth/authorize?{query}", headers={"accept": "text/html"})
     assert page.status == 200 and b"Test App" in page.body
+    # Enter in the password field submits the first submit button, so that must be Allow, not Deny.
+    first_button = page.body.split(b'type="submit"', 2)[1]
+    assert first_button.startswith(b' name="decision" value="allow"')
     form = {"request_uri": par["request_uri"], "client_id": par["client_id"], "identifier": "alice.rookery.test",
             "decision": "allow"}
     headers = {"content-type": "application/x-www-form-urlencoded"}

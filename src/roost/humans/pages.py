@@ -27,6 +27,7 @@ input[type=text], input[type=email], input[type=password] { font:inherit; paddin
 .suffix span { color:var(--muted); white-space:nowrap; }
 .check { display:flex; gap:10px; align-items:flex-start; font-weight:400; }
 .row { display:flex; gap:10px; }
+.row.reverse { flex-direction:row-reverse; }
 button { font:inherit; font-weight:600; padding:10px 16px; border-radius:10px; border:1px solid var(--ink);
   background:var(--ink); color:var(--bg); cursor:pointer; flex:1; }
 button.secondary { background:transparent; color:var(--ink); }
@@ -245,9 +246,10 @@ def render_consent_page(env, par: dict, params: dict, problem: str | None = None
       value="{_e(hint)}"></label>
   <label>Password <input type="password" name="password" autocomplete="current-password"></label>
   <div>It will be allowed to:<ul class="scopes">{items}</ul></div>
-  <div class="row">
-    <button type="submit" name="decision" value="deny" class="secondary" formnovalidate>Deny</button>
+  <div class="row reverse">
+    <!-- Allow comes first so Enter in the password field allows; the row shows Deny on the left. -->
     <button type="submit" name="decision" value="allow">Allow</button>
+    <button type="submit" name="decision" value="deny" class="secondary" formnovalidate>Deny</button>
   </div>
 </form>
 <p class="lede" style="margin-top:16px">Agents grant consent with their WelcomeMat key instead; see
