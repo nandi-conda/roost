@@ -15,9 +15,7 @@ from roost.keys import Secp256k1Keypair
 from roost.net import HttpResponse
 from roost.oauth import store as oauth_store
 from roost.spaces.httpsig import P256Keypair
-from test_spaces_flow import FORUM, POST, S, X, credential_for, setup, signed
-
-PUBLIC = {"$type": "com.atproto.simplespace.defs#publicPolicy"}
+from test_spaces_flow import FORUM, POST, PUBLIC, X, credential_for, setup, signed
 
 
 def service_jwt(key: Secp256k1Keypair, iss: str, aud: str, lxm: str) -> str:
@@ -70,9 +68,8 @@ async def test_registered_syncer_receives_write_notifications(client, env):
 
 async def test_remote_writer_notifies_this_space_host(client, env):
     alice = await human(client, "alice")
-    created = await call(client, "POST", S + "createSpace", alice, spaceType=FORUM, skey="open",
-                         readPolicy=PUBLIC, writePolicy=PUBLIC,
-                         appAccess={"$type": "com.atproto.simplespace.defs#open"})
+    created = await call(client, "POST", X + "createSpace", alice, spaceType=FORUM, skey="open",
+                         policy=PUBLIC)
     space = created["uri"]
     remote_key, remote_did = Secp256k1Keypair.create(), "did:plc:remotewriter0000000000"
     publish_plc(env, remote_did, remote_key, "https://elsewhere.test")
@@ -147,7 +144,7 @@ async def test_space_deletion_reaches_every_registered_syncer(client, env):
         await call(client, "POST", X + "registerNotify", headers=signed(key, credential, alice["did"]),
                    space=space, service=f"did:web:{base.removeprefix('https://')}#syncer")
 
-    await call(client, "POST", S + "deleteSpace", alice, space=space)
+    await call(client, "POST", X + "deleteSpace", alice, space=space)
     assert sorted(base for base, _ in received) == ["https://one.test", "https://two.test"]
     assert all(notice == {"space": space} for _, notice in received)
     do = env.account_do((await env.db.first("SELECT do_id FROM accounts WHERE did = ?", alice["did"]))["do_id"]).account
@@ -157,8 +154,7 @@ async def test_space_deletion_reaches_every_registered_syncer(client, env):
 
     do.spaces.sql.exec("UPDATE space_deleted_notification_retry SET retry_at = 0")
     other = f"at://{alice['did']}/space/{FORUM}/other"
-    await call(client, "POST", S + "createSpace", alice, spaceType=FORUM, skey="other", readPolicy=PUBLIC,
-               writePolicy=PUBLIC, appAccess={"$type": "com.atproto.simplespace.defs#open"})
+    await call(client, "POST", X + "createSpace", alice, spaceType=FORUM, skey="other", policy=PUBLIC)
     await call(client, "POST", X + "createRecord", alice, space=other, repo=alice["did"], collection=POST,
                rkey="1", record={"text": "later activity"})
     assert [base for base, _ in received].count("https://one.test") == 2
@@ -167,8 +163,7 @@ async def test_space_deletion_reaches_every_registered_syncer(client, env):
     # A notice still owed when the space is recreated is dropped, and expired ones lapse.
     do.spaces.queue_deletion_notice(space, "did:web:one.test#syncer", 1, 0, 2**53)
     do.spaces.queue_deletion_notice(other, "did:web:two.test#syncer", 1, 0, 1)
-    await call(client, "POST", S + "createSpace", alice, spaceType=FORUM, skey="general", readPolicy=PUBLIC,
-               writePolicy=PUBLIC, appAccess={"$type": "com.atproto.simplespace.defs#open"})
+    await call(client, "POST", X + "createSpace", alice, spaceType=FORUM, skey="general", policy=PUBLIC)
     assert do.spaces.due_deletion_notices(10**15) == []
 
 

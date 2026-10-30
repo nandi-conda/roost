@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 sol pbc
 
-"""The com.atproto.space.* and com.atproto.simplespace.* XRPC routes.
+"""The com.atproto.space.* and com.atproto.memberspace.* XRPC routes.
 
 Rookery plays every PDS role in the spaces design: the repo host for its
 accounts' records in any space, the space host (authority) for spaces its
@@ -33,13 +33,22 @@ from .mac import (
     format_mac_header,
     parse_want_mac_header,
 )
+from .meta import SpaceMetaArchiveError, parse_members, read_space_meta
 from .notify import notify_space_deleted, notify_write, process_notify_write
+from .policy import (
+    PUBLISHED_COLLECTIONS,
+    assert_not_published_collection,
+    authorize_credential,
+    normalize_policy,
+)
 from .refs import InvalidSpaceRef, SpaceRef, space_host_aud
 from .scopes import space_scope_denial
-from .simplespace import authorize_credential, config_from_input, config_to_lex
+from .star import StarParseError, read_own_repo_star
 
 X = "/xrpc/com.atproto.space."
-S = "/xrpc/com.atproto.simplespace."
+M = "/xrpc/com.atproto.memberspace."
+# Both imports carry a whole archive through one Durable Object call.
+MAX_IMPORT_BYTES = 16 * 1024 * 1024
 
 
 def ok() -> Response:
@@ -158,6 +167,7 @@ async def _write(request, env, mode: str):
     collection, rkey = body.get("collection"), body.get("rkey")
     if not is_valid_nsid(collection):
         raise invalid("Invalid collection")
+    assert_not_published_collection(collection)
     if mode != "create" and not is_valid_record_key(rkey):
         raise invalid("Invalid rkey")
     if mode != "delete" and "record" not in body:
@@ -205,6 +215,7 @@ async def apply_writes(request, env):
     if not isinstance(writes, list) or not all(isinstance(write, dict) for write in writes):
         raise invalid("writes must be a list of objects")
     for write in writes:
+        assert_not_published_collection(write.get("collection"))
         action = (write.get("$type") or "").rpartition("#")[2]
         if action in ("create", "update", "delete"):
             check_space_scope(auth, ref, action=action, collection=write.get("collection"))
@@ -401,9 +412,9 @@ async def get_space_credential(request, env):
     # A syncer that missed notifySpaceDeleted learns it here, token or not.
     if status["deleted"]:
         raise XrpcError("SpaceDeleted", "Space has been deleted")
-    if not status["config"]:
+    if not status["policy"]:
         raise XrpcError("SpaceNotFound", "Space not found")
-    await authorize_credential(env, authority, dict(status["config"]), user_did, client_id)
+    await authorize_credential(env, authority, space, status["policy"], user_did, client_id)
     credential = await authority.space_sign_token(token_type="credential", sub=space, key_id=credential_kid)
     return json_response({"credential": credential})
 
@@ -491,9 +502,24 @@ async def unregister_notify(request, env):
     return ok()
 
 
-# simplespace: governance of spaces this host's accounts own
+# Governance of spaces this host's accounts own: the policy (com.atproto.space.*)
+# and the memberspace member list (com.atproto.memberspace.*)
 
-@router.post(S + "createSpace")
+def require_policy(body: dict) -> dict:
+    """The policy as sent; the authority's DO normalizes what it stores."""
+    if "policy" not in body:
+        raise invalid("Missing policy")
+    return body["policy"]
+
+
+def owner_space(auth: dict, value, **op) -> SpaceRef:
+    ref = parse_space(value)
+    check_space_scope(auth, ref, **op)
+    assert_owner(auth, ref)
+    return ref
+
+
+@router.post(X + "createSpace")
 async def create_space(request, env):
     auth = await authenticate(request, env, "POST")
     body = await json_body(request)
@@ -504,29 +530,28 @@ async def create_space(request, env):
         raise invalid("Invalid skey")
     ref = SpaceRef(auth["did"], space_type, skey)
     check_space_scope(auth, ref, manage="create")
-    config = config_from_input(body)
-    await env.account(auth["do_id"]).space_create(space=str(ref), config=config)
+    account = env.account(auth["do_id"])
+    commit = await account.space_create(space=str(ref), policy=require_policy(body))
+    await notify_write(env, account, auth["did"], str(ref), commit)
     return json_response({"uri": str(ref)})
 
 
-@router.post(S + "updateSpace")
+@router.post(X + "updateSpace")
 async def update_space(request, env):
     auth = await authenticate(request, env, "POST")
     body = await json_body(request)
-    ref = parse_space(body.get("space"))
-    check_space_scope(auth, ref, manage="update")
-    assert_owner(auth, ref)
-    await env.account(auth["do_id"]).space_update(space=str(ref), config=config_from_input(body, partial=True))
+    ref = owner_space(auth, body.get("space"), manage="update")
+    account = env.account(auth["do_id"])
+    commit = await account.space_update(space=str(ref), policy=require_policy(body))
+    await notify_write(env, account, auth["did"], str(ref), commit)
     return ok()
 
 
-@router.post(S + "deleteSpace")
+@router.post(X + "deleteSpace")
 async def delete_space(request, env):
     auth = await authenticate(request, env, "POST")
     body = await json_body(request)
-    ref = parse_space(body.get("space"))
-    check_space_scope(auth, ref, manage="delete")
-    assert_owner(auth, ref)
+    ref = owner_space(auth, body.get("space"), manage="delete")
     account = env.account(auth["do_id"])
     recipients = await account.space_delete(space=str(ref))
     if recipients:
@@ -534,57 +559,135 @@ async def delete_space(request, env):
     return ok()
 
 
-@router.get(S + "getSpace")
+@router.get(X + "getSpace")
 async def get_space(request, env):
-    space = request.query("space")
+    """The owner only: a space credential does not reach the policy, which a space can
+    publish to readers as a record instead."""
+    auth = await authenticate(request, env, "GET")
+    ref = owner_space(auth, request.query("space"), action="read_self")
+    policy = await env.account(auth["do_id"]).space_get(space=str(ref))
+    return json_response({"uri": str(ref), "policy": policy})
+
+
+@router.post(X + "removeWriter")
+async def remove_writer(request, env):
+    auth = await authenticate(request, env, "POST")
+    body = await json_body(request)
+    ref = owner_space(auth, body.get("space"), manage="update")
+    did = require_did(body.get("did"), "did")
+    await env.account(auth["do_id"]).space_remove_writer(space=str(ref), did=did)
+    return ok()
+
+
+@router.post(X + "clearRecords")
+async def clear_records(request, env):
+    auth = await authenticate(request, env, "POST")
+    body = await json_body(request)
+    space = body.get("space")
     ref = parse_space(space)
-    if is_space_credential(request):
-        assert_credential_space(await verify_space_credential(request, env), space)
-    else:
-        auth = await authenticate(request, env, "GET")
-        check_space_scope(auth, ref, action="read_self")
-        assert_owner(auth, ref)
-    config = await (await space_host(env, ref)).space_get(space=space)
-    return json_response(config_to_lex(config))
+    if body.get("repo") != auth["did"]:
+        raise XrpcError("Forbidden", "repo must match authenticated user", 403)
+    account = env.account(auth["do_id"])
+    granted = None
+    if auth["kind"] == "oauth":
+        # The published policy and member records stay in the authority's repo, and
+        # keeping them takes no grant.
+        keep = PUBLISHED_COLLECTIONS if ref.did == auth["did"] else ()
+        granted = [c for c in await account.space_list_collections(space=str(ref)) if c not in keep]
+        for collection in granted:
+            check_space_scope(auth, ref, action="delete", collection=collection)
+    commit = await account.space_clear_records(space=str(ref), granted=granted)
+    await notify_write(env, account, auth["did"], str(ref), commit)
+    return json_response({})
 
 
-@router.get(S + "listMembers")
+async def import_body(request) -> bytes:
+    data = await request.bytes()
+    if len(data) > MAX_IMPORT_BYTES:
+        raise XrpcError("InvalidRequest", f"Archive exceeds {MAX_IMPORT_BYTES} bytes")
+    return data
+
+
+@router.post(X + "importRepo")
+async def import_repo(request, env):
+    """An account's own repo in a space, from its previous host (a migration)."""
+    auth = await authenticate(request, env, "POST")
+    try:
+        commit, records = read_own_repo_star(await import_body(request))
+    except StarParseError as exc:
+        raise invalid(f"Invalid STAR: {exc}") from exc
+    if commit.get("repo") != auth["did"]:
+        raise invalid("Repo does not match the authenticated account")
+    ref = parse_space(commit.get("space"))
+    for collection in sorted({record[0] for record in records}):
+        check_space_scope(auth, ref, action="create", collection=collection)
+    await env.account(auth["do_id"]).space_import_repo(space=str(ref), records=records)
+    return ok()
+
+
+@router.get(X + "exportSpaceMeta")
+async def export_space_meta(request, env):
+    auth = await authenticate(request, env, "GET")
+    ref = owner_space(auth, request.query("space"), action="read_self")
+    archive = await env.account(auth["do_id"]).space_export_meta(space=str(ref))
+    return body_response(archive, 200, "application/octet-stream")
+
+
+@router.post(X + "importSpaceMeta")
+async def import_space_meta(request, env):
+    """A space's policy, member list and writer set, as its authority's account moves here."""
+    auth = await authenticate(request, env, "POST")
+    try:
+        archive = read_space_meta(await import_body(request))
+    except SpaceMetaArchiveError as exc:
+        raise invalid(f"Invalid space meta archive: {exc}") from exc
+    ref = parse_space(archive["space"])
+    check_space_scope(auth, ref, manage="create")
+    owner_space(auth, str(ref), manage="update")
+    policy = normalize_policy(archive["policy"])
+    try:
+        members = parse_members(policy, archive["state"])
+    except SpaceMetaArchiveError as exc:
+        raise invalid(str(exc)) from exc
+    await env.account(auth["do_id"]).space_import_meta(space=str(ref), policy=policy, members=members,
+                                                       writers=archive["writers"])
+    return ok()
+
+
+@router.get(M + "listMembers")
 async def list_members(request, env):
     auth = await authenticate(request, env, "GET")
-    ref = parse_space(request.query("space"))
-    check_space_scope(auth, ref, action="read_self")
-    assert_owner(auth, ref)
+    ref = owner_space(auth, request.query("space"), action="read_self")
     limit = clamp(request.query("limit"), 50, 100)
     members = await env.account(auth["do_id"]).space_list_members(
         space=str(ref), limit=limit, cursor=request.query("cursor") or None,
     )
     out = {"members": members}
-    if members:
+    if len(members) == limit:
         out["cursor"] = members[-1]["did"]
     return json_response(out)
 
 
-@router.post(S + "putMember")
+@router.post(M + "putMember")
 async def put_member(request, env):
     auth = await authenticate(request, env, "POST")
     body = await json_body(request)
-    ref = parse_space(body.get("space"))
-    check_space_scope(auth, ref, manage="update")
-    assert_owner(auth, ref)
+    ref = owner_space(auth, body.get("space"), manage="update")
     did = require_did(body.get("did"), "did")
     if not isinstance(body.get("read"), bool) or not isinstance(body.get("write"), bool):
         raise invalid("read and write must be booleans")
-    await env.account(auth["do_id"]).space_put_member(space=str(ref), did=did, read=body["read"], write=body["write"])
+    account = env.account(auth["do_id"])
+    commit = await account.space_put_member(space=str(ref), did=did, read=body["read"], write=body["write"])
+    await notify_write(env, account, auth["did"], str(ref), commit)
     return ok()
 
 
-@router.post(S + "removeMember")
+@router.post(M + "removeMember")
 async def remove_member(request, env):
     auth = await authenticate(request, env, "POST")
     body = await json_body(request)
-    ref = parse_space(body.get("space"))
-    check_space_scope(auth, ref, manage="update")
-    assert_owner(auth, ref)
-    await env.account(auth["do_id"]).space_remove_member(space=str(ref), did=require_did(body.get("did"), "did"))
+    ref = owner_space(auth, body.get("space"), manage="update")
+    account = env.account(auth["do_id"])
+    commit = await account.space_remove_member(space=str(ref), did=require_did(body.get("did"), "did"))
+    await notify_write(env, account, auth["did"], str(ref), commit)
     return ok()
-

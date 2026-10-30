@@ -21,8 +21,8 @@ from ..encoding import s32_decode
 from ..errors import XrpcError
 from ..lexjson import lex_to_json
 from .identity import local_account, service_endpoint
+from .policy import authorize_user
 from .refs import SpaceRef, space_host_aud
-from .simplespace import authorize_user
 
 log = logging.getLogger("roost.spaces")
 
@@ -74,9 +74,9 @@ async def process_notify_write(env, space: str, repo: str, repo_rev: str, digest
         raise XrpcError("FutureRev", "Repo revision is in the future")
     authority = env.account(host["do_id"])
     status = await authority.space_status(space=space)
-    if not status["config"] or status["deleted"]:
+    if not status["policy"] or status["deleted"]:
         raise XrpcError("SpaceNotFound", "Space not found")
-    if not await authorize_user(env, authority, dict(status["config"]), repo, "write"):
+    if not await authorize_user(env, authority, space, status["policy"], repo, "write"):
         raise XrpcError("Forbidden", "notifyWrite writer is not authorized", 403)
     env.wait_until(retry_deletion_notices(env, authority))
     sequence = await authority.space_record_writer(space=space, did=repo, repo_rev=repo_rev, hash=digest)

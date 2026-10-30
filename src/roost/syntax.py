@@ -11,6 +11,7 @@ _NSID_RE = re.compile(
 )
 _DID_RE = re.compile(r"^did:[a-z]+:[a-zA-Z0-9._:%-]*[a-zA-Z0-9._-]$")
 _RKEY_RE = re.compile(r"^[a-zA-Z0-9_~.:-]{1,512}$")
+_TID_RE = re.compile(r"^[234567abcdefghij][234567abcdefghijklmnopqrstuvwxyz]{12}$")
 
 
 class InvalidHandleError(ValueError):
@@ -27,6 +28,10 @@ def is_valid_did(value: str) -> bool:
 
 def is_valid_record_key(value: str) -> bool:
     return isinstance(value, str) and value not in (".", "..") and bool(_RKEY_RE.match(value))
+
+
+def is_valid_tid(value: str) -> bool:
+    return isinstance(value, str) and bool(_TID_RE.match(value))
 
 
 def ensure_valid_handle(value: str) -> None:

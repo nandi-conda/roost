@@ -20,7 +20,9 @@ from roost.spaces.star import read_repo_star
 FORUM = "com.example.forum"
 POST = "com.example.forum.post"
 X = "/xrpc/com.atproto.space."
-S = "/xrpc/com.atproto.simplespace."
+M = "/xrpc/com.atproto.memberspace."
+MEMBERS = {"$type": "com.atproto.memberspace.policy"}
+PUBLIC = {"$type": "com.atproto.memberspace.policy", "publicRead": True, "publicWrite": True}
 
 
 async def credential_for(client, user, space, key, expect=200, **extra):
@@ -55,13 +57,11 @@ def lex_commit(value: dict) -> dict:
 
 async def setup(client):
     alice, bob, carol = [await human(client, name) for name in ("alice", "bob", "carol")]
-    member_list = {"$type": "com.atproto.simplespace.defs#memberListPolicy"}
-    created = await call(client, "POST", S + "createSpace", alice, spaceType=FORUM, skey="general",
-                         readPolicy=member_list, writePolicy=member_list,
-                         appAccess={"$type": "com.atproto.simplespace.defs#open"})
+    created = await call(client, "POST", X + "createSpace", alice, spaceType=FORUM, skey="general",
+                         policy=MEMBERS)
     space = created["uri"]
     assert space == f"at://{alice['did']}/space/{FORUM}/general"
-    await call(client, "POST", S + "putMember", alice, space=space, did=bob["did"], read=True, write=True)
+    await call(client, "POST", M + "putMember", alice, space=space, did=bob["did"], read=True, write=True)
     return alice, bob, carol, space
 
 
@@ -188,7 +188,7 @@ async def test_credential_requests(client, env):
     alice, bob, carol, space = await setup(client)
     key = P256Keypair()
     refused = await credential_for(client, carol, space, key, expect=400)
-    assert refused["error"] == "UserNotAuthorized"
+    assert refused["error"] == "SpaceNotFound"  # not found or not authorized
 
     token = (await call(client, "GET", f"{X}getDelegationToken?space={space}", bob))["token"]
     request = {"space": space, "credentialKid": key.did(), "delegationToken": token}
@@ -199,10 +199,7 @@ async def test_credential_requests(client, env):
     assert garbage["error"] == "InvalidDelegationToken"
     # A token for another space is refused; so is a key that is not P-256.
     other = f"at://{alice['did']}/space/{FORUM}/other"
-    await call(client, "POST", S + "createSpace", alice, spaceType=FORUM, skey="other",
-               readPolicy={"$type": "com.atproto.simplespace.defs#memberListPolicy"},
-               writePolicy={"$type": "com.atproto.simplespace.defs#memberListPolicy"},
-               appAccess={"$type": "com.atproto.simplespace.defs#open"})
+    await call(client, "POST", X + "createSpace", alice, spaceType=FORUM, skey="other", policy=MEMBERS)
     token = (await call(client, "GET", f"{X}getDelegationToken?space={other}", alice))["token"]
     mismatched = await call(client, "POST", X + "getSpaceCredential", expect=400,
                             **dict(request, delegationToken=token))
@@ -234,14 +231,15 @@ async def test_delegation_tokens_name_the_authority_pds(client, env):
 
 async def test_owner_governance_and_delete(client, env):
     alice, bob, carol, space = await setup(client)
-    await call(client, "POST", S + "putMember", bob, expect=400, space=space, did=carol["did"], read=True,
+    await call(client, "POST", M + "putMember", bob, expect=400, space=space, did=carol["did"], read=True,
                write=False)
-    members = await call(client, "GET", f"{S}listMembers?space={space}", alice)
+    members = await call(client, "GET", f"{M}listMembers?space={space}", alice)
     assert members["members"] == [{"did": bob["did"], "read": True, "write": True}]
-    described = await call(client, "GET", f"{S}getSpace?space={space}", alice)
-    assert described["readPolicy"]["$type"].endswith("#memberListPolicy")
-    await call(client, "POST", S + "updateSpace", alice, space=space,
-               readPolicy={"$type": "com.atproto.simplespace.defs#publicPolicy"})
+    described = await call(client, "GET", f"{X}getSpace?space={space}", alice)
+    assert described == {"uri": space, "policy": {"$type": "com.atproto.memberspace.policy", "publicRead": False,
+                                                  "publicWrite": False, "publishPolicy": False,
+                                                  "publishMembers": False}}
+    await call(client, "POST", X + "updateSpace", alice, space=space, policy=dict(MEMBERS, publicRead=True))
     key = P256Keypair()
     await credential_for(client, carol, space, key)  # public read now
     # A public space issues credentials without a delegation token.
@@ -249,8 +247,8 @@ async def test_owner_governance_and_delete(client, env):
 
     await call(client, "POST", X + "createRecord", alice, space=space, repo=alice["did"], collection=POST,
                rkey="a", record={"text": "a"})
-    await call(client, "POST", S + "deleteSpace", alice, space=space)
-    await call(client, "POST", S + "deleteSpace", alice, space=space)  # already gone: nothing to do
+    await call(client, "POST", X + "deleteSpace", alice, space=space)
+    await call(client, "POST", X + "deleteSpace", alice, space=space)  # already gone: nothing to do
     gone = await credential_for(client, bob, space, key, expect=400)
     assert gone["error"] == "SpaceDeleted"
     tokenless = await call(client, "POST", X + "getSpaceCredential", expect=400, space=space, credentialKid=key.did())
@@ -261,10 +259,7 @@ async def test_owner_governance_and_delete(client, env):
     assert (await call(client, "GET", f"{X}listSpaces", alice))["spaces"] == []
 
     # The authority may recreate it; it is a new, empty space.
-    await call(client, "POST", S + "createSpace", alice, spaceType=FORUM, skey="general",
-               readPolicy={"$type": "com.atproto.simplespace.defs#publicPolicy"},
-               writePolicy={"$type": "com.atproto.simplespace.defs#publicPolicy"},
-               appAccess={"$type": "com.atproto.simplespace.defs#open"})
+    await call(client, "POST", X + "createSpace", alice, spaceType=FORUM, skey="general", policy=PUBLIC)
     await call(client, "POST", X + "getSpaceCredential", space=space, credentialKid=key.did())
     gone = await call(client, "GET", f"{X}getLatestCommit?space={space}&repo={alice['did']}", alice, expect=400)
     assert gone["error"] == "RepoNotFound"
@@ -297,7 +292,8 @@ async def test_service_describe_advertises_spaces(client):
     body = response.json()
     assert body["roles"] == ["pds"]
     methods = {entry["value"] for entry in body["methods"]}
-    assert {"com.atproto.space.getDelegationToken", "com.atproto.simplespace.createSpace",
+    assert {"com.atproto.space.getDelegationToken", "com.atproto.space.createSpace",
+            "com.atproto.memberspace.putMember",
             "com.atproto.server.describeServer", "community.lexicon.service.describe"} <= methods
     assert all(entry["$type"] == "community.lexicon.service.describe#nsid" for entry in body["methods"])
     assert not any("(" in value for value in methods)
@@ -309,7 +305,6 @@ async def test_delegation_for_a_missing_own_space_says_so(client):
     space = f"at://{dana['did']}/space/{FORUM}/self"
     missing = await call(client, "GET", f"{X}getDelegationToken?space={space}", dana, expect=400)
     assert missing["error"] == "SpaceNotFound"
-    member_list = {"$type": "com.atproto.simplespace.defs#memberListPolicy"}
-    await call(client, "POST", S + "createSpace", dana, spaceType=FORUM, skey="self", readPolicy=member_list,
-               writePolicy=member_list, appAccess={"$type": "com.atproto.simplespace.defs#open"})
+    await call(client, "POST", X + "createSpace", dana, spaceType=FORUM, skey="self",
+               policy={"$type": "com.atproto.personalspace.policy"})
     assert (await call(client, "GET", f"{X}getDelegationToken?space={space}", dana))["token"]

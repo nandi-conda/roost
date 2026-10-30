@@ -19,6 +19,16 @@ from ..syntax import is_valid_nsid, is_valid_record_key
 from ..tid import next_tid
 from .lthash import LtHash
 from .mac import SpaceMacError, compute_commit_mac, compute_record_mac, decapsulate
+from .meta import serialize_space_meta
+from .policy import (
+    MEMBERSPACE,
+    PUBLISHED_COLLECTIONS,
+    are_members_published,
+    assert_memberspace,
+    member_record_write,
+    normalize_policy,
+    policy_record_write,
+)
 from .refs import InvalidSpaceRef, SpaceRef
 from .star import MAX_RECORD_SIZE
 from .store import SpaceStore
@@ -33,7 +43,8 @@ WRITE_TYPES = {
 
 SPACE_METHODS = frozenset({
     "space_create", "space_update", "space_get", "space_status", "space_delete", "space_put_member",
-    "space_remove_member", "space_list_members", "space_get_member", "space_record_writer",
+    "space_remove_member", "space_list_members", "space_get_member", "space_remove_writer", "space_export_meta",
+    "space_import_meta", "space_list_collections", "space_clear_records", "space_import_repo", "space_record_writer",
     "space_list_writers", "space_register_recipient", "space_unregister_recipient", "space_recipients",
     "space_apply_writes", "space_put_record", "space_get_record", "space_list_records", "space_list_repo_ops",
     "space_latest_commit", "space_export_star", "space_list_blobs", "space_has_blob", "space_list_spaces",
@@ -126,32 +137,104 @@ class SpaceMethods:
     def _known_blob(self, cid: str) -> bool:
         return bool(self.storage.sql.exec("SELECT 1 AS x FROM blobs WHERE cid = ? LIMIT 1", cid))
 
-    # Governance (this account is the space authority)
+    # Governance (this account is the space authority). A change that publishes the
+    # space's configuration returns the commit to the authority's repo, owed a notifyWrite.
 
-    async def space_create(self, space: str, config: dict) -> None:
-        self.spaces.create_space(space, config)
+    def _publish(self, space: str, writes: list[tuple[str, str, dict | None]]) -> dict | None:
+        """Bring published records ((collection, rkey, record or None)) in line, as one commit."""
+        did, ref = self._did(), parse_space(space)
+        prepared = []
+        for collection, rkey, record in writes:
+            existing = self.spaces.get_record(ref.record_uri(did, collection, rkey))
+            if record is None:
+                if existing:
+                    prepared.append(prepare_write(did, ref, "delete", collection, rkey))
+                continue
+            write = prepare_write(did, ref, "update" if existing else "create", collection, rkey, record)
+            if not existing or existing["cid"] != write["cid"]:
+                prepared.append(write)
+        return self._commit_out(self.spaces.apply_writes(did, space, prepared, self._known_blob))
 
-    async def space_update(self, space: str, config: dict) -> None:
-        self.spaces.update_config(space, config)
+    async def space_create(self, space: str, policy: dict) -> dict | None:
+        policy = normalize_policy(policy)
+        self.spaces.create_space(space, policy)
+        return self._publish(space, [policy_record_write(policy)])
+
+    async def space_update(self, space: str, policy: dict) -> dict | None:
+        """Replace the policy wholesale; a different `$type` discards the old policy's state."""
+        policy = normalize_policy(policy)
+        current = self.spaces.get_active_policy(space)
+        writes = [policy_record_write(policy)]
+        if are_members_published(current) != are_members_published(policy):
+            writes += [member_record_write(policy, member["did"], member)
+                       for member in self.spaces.list_members(space)]
+        self.spaces.set_policy(space, policy)
+        if current["$type"] != policy["$type"]:
+            self.spaces.remove_all_members(space)
+        return self._publish(space, writes)
 
     async def space_get(self, space: str) -> dict:
-        return self.spaces.get_active_config(space)
+        return self.spaces.get_active_policy(space)
 
     async def space_status(self, space: str) -> dict:
         existing = self.spaces.get_space(space)
-        return {"deleted": bool(existing and existing["deleted_at"]), "config": self.spaces.get_config(space)}
+        return {"deleted": bool(existing and existing["deleted_at"]), "policy": self.spaces.get_policy(space)}
 
     async def space_delete(self, space: str) -> list[dict]:
         return self.spaces.delete_space(space)
 
-    async def space_put_member(self, space: str, did: str, read: bool, write: bool) -> None:
+    async def space_put_member(self, space: str, did: str, read: bool, write: bool) -> dict | None:
+        policy = self.spaces.get_active_policy(space)
+        assert_memberspace(policy)
         self.spaces.put_member(space, did, read, write)
+        if not write:
+            self.spaces.remove_writer(space, did)
+        return self._publish(space, [member_record_write(policy, did, {"read": read, "write": write})])
 
-    async def space_remove_member(self, space: str, did: str) -> None:
+    async def space_remove_member(self, space: str, did: str) -> dict | None:
+        policy = self.spaces.get_active_policy(space)
+        assert_memberspace(policy)
         self.spaces.remove_member(space, did)
+        self.spaces.remove_writer(space, did)
+        return self._publish(space, [member_record_write(policy, did, None)])
 
     async def space_list_members(self, space: str, limit: int, cursor: str | None = None) -> list[dict]:
+        assert_memberspace(self.spaces.get_active_policy(space))
         return self.spaces.list_members(space, limit, cursor)
+
+    async def space_remove_writer(self, space: str, did: str) -> None:
+        self.spaces.get_active_policy(space)
+        self.spaces.remove_writer(space, did)
+
+    async def space_export_meta(self, space: str) -> bytes:
+        policy = self.spaces.get_active_policy(space)
+        members = self.spaces.list_members(space) if policy["$type"] == MEMBERSPACE else []
+        return serialize_space_meta(space, policy, members, self.spaces.list_writers(space, None, None))
+
+    async def space_import_meta(self, space: str, policy: dict, members: list, writers: list) -> None:
+        """Replace this host's state for a space whose authority's account moved here,
+        from a parsed space meta archive. Its published records arrive with the
+        authority's repo (importRepo), so nothing is published."""
+        self.spaces.import_space(space, policy, members, writers)
+
+    async def space_list_collections(self, space: str) -> list[str]:
+        return self.spaces.list_collections(space)
+
+    async def space_clear_records(self, space: str, granted: list | None = None) -> dict | None:
+        """Delete every record in this account's repo in `space` (in its own space, all
+        but the published policy and member records) at a new rev; returns the commit,
+        or None for a no-op. `granted` lists the collections an OAuth caller may delete;
+        None is full access."""
+        keep = PUBLISHED_COLLECTIONS if parse_space(space).did == self._did() else ()
+        if granted is not None:
+            for collection in self.spaces.list_collections(space):
+                if collection not in keep and collection not in granted:
+                    raise XrpcError("InsufficientScope", f"Scope does not permit delete of {collection}", 403)
+        return self._commit_out(self.spaces.clear_records(space, keep))
+
+    async def space_import_repo(self, space: str, records: list) -> None:
+        """Replace this account's repo in `space` with records read by read_own_repo_star."""
+        self.spaces.import_repo(self._did(), space, [tuple(record) for record in records])
 
     async def space_get_member(self, space: str, did: str) -> dict | None:
         return self.spaces.get_member(space, did)

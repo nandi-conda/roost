@@ -6,8 +6,8 @@ transactor in the reference PDS.
 
 Every account holds its own repos in other spaces (space, space_repo,
 space_record, space_record_oplog, space_record_blob). An account that is a space
-authority also holds that space's governance: simplespace_config,
-simplespace_member, space_writer (the sequenced writer set) and
+authority also holds that space's governance: space_policy (the policy as
+normalized JSON), memberspace_member, space_writer (the sequenced writer set) and
 space_credential_recipient (services registered for write notifications), and
 the deletion notices it still owes them. space_kem_key holds the account's
 #atproto_kem key, which keys the MACs on its space repos.
@@ -16,6 +16,7 @@ space_writer.hash and space_notification_retry.hash hold what the wire now calls
 `data` (the sha256 of the LtHash state); the stored values are unchanged.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
 
 from .. import cbor
@@ -25,6 +26,7 @@ from ..lexjson import lex_to_json
 from ..tid import next_tid
 from .commit import apply_op, build_commit
 from .lthash import LtHash
+from .policy import MANAGEDSPACE, MEMBERSPACE
 from .refs import SpaceRef
 from .star import write_repo_star
 
@@ -36,16 +38,11 @@ SCHEMA = [
         created_at TEXT NOT NULL,
         deleted_at TEXT
       )""",
-    """CREATE TABLE IF NOT EXISTS simplespace_config (
+    """CREATE TABLE IF NOT EXISTS space_policy (
         uri TEXT PRIMARY KEY,
-        read_policy TEXT NOT NULL,
-        read_managing_app TEXT,
-        write_policy TEXT NOT NULL,
-        write_managing_app TEXT,
-        app_access_type TEXT NOT NULL,
-        app_allowed TEXT NOT NULL
+        policy_json TEXT NOT NULL
       )""",
-    """CREATE TABLE IF NOT EXISTS simplespace_member (
+    """CREATE TABLE IF NOT EXISTS memberspace_member (
         space TEXT NOT NULL,
         did TEXT NOT NULL,
         can_read INTEGER NOT NULL,
@@ -128,7 +125,6 @@ SCHEMA = [
       )""",
 ]
 
-POLICIES = ("public", "member-list", "managing-app")
 REGISTRATION_TTL = timedelta(days=1)
 
 
@@ -138,6 +134,21 @@ def now_iso() -> str:
 
 def space_not_found() -> XrpcError:
     return XrpcError("SpaceNotFound", "Space not found")
+
+
+def simplespace_config_to_policy(config: dict) -> dict:
+    """An October 22 simplespace_config row as its October 29 policy, as the reference
+    PDS's 006-space-policy migration: a managing app on either side makes a
+    managedspace (asked about both reads and writes, any allow-list dropped);
+    anything else is a memberspace."""
+    managing_app = config["read_managing_app"] or config["write_managing_app"]
+    if managing_app:
+        return {"$type": MANAGEDSPACE, "managingApp": managing_app, "publishPolicy": False}
+    policy = {"$type": MEMBERSPACE, "publicRead": config["read_policy"] == "public",
+              "publicWrite": config["write_policy"] == "public"}
+    if config["app_access_type"] == "allowList":
+        policy["allowedApps"] = json.loads(config["app_allowed"])
+    return dict(policy, publishPolicy=False, publishMembers=False)
 
 
 def find_blob_refs(value) -> list[tuple[str, str | None]]:
@@ -164,6 +175,25 @@ class SpaceStore:
     def init_schema(self) -> None:
         for statement in SCHEMA:
             self.sql.exec(statement)
+        self._migrate_simplespace()
+
+    def _migrate_simplespace(self) -> None:
+        """Convert October 22 simplespace configs to policies, once; drop member lists
+        of spaces that become managedspace."""
+        if not self._one("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'simplespace_config'"):
+            return
+        for config in self.sql.exec("SELECT * FROM simplespace_config"):
+            policy = simplespace_config_to_policy(config)
+            self.sql.exec("INSERT OR REPLACE INTO space_policy (uri, policy_json) VALUES (?, ?)",
+                          config["uri"], json.dumps(policy))
+            if policy["$type"] == MEMBERSPACE:
+                self.sql.exec(
+                    """INSERT OR REPLACE INTO memberspace_member (space, did, can_read, can_write)
+                       SELECT space, did, can_read, can_write FROM simplespace_member WHERE space = ?""",
+                    config["uri"],
+                )
+        self.sql.exec("DROP TABLE IF EXISTS simplespace_member")
+        self.sql.exec("DROP TABLE simplespace_config")
 
     def _one(self, query: str, *params) -> dict | None:
         rows = self.sql.exec(query, *params)
@@ -174,14 +204,15 @@ class SpaceStore:
     def get_space(self, uri: str) -> dict | None:
         return self._one("SELECT * FROM space WHERE uri = ?", uri)
 
-    def get_config(self, uri: str) -> dict | None:
-        return self._one("SELECT * FROM simplespace_config WHERE uri = ?", uri)
+    def get_policy(self, uri: str) -> dict | None:
+        row = self._one("SELECT policy_json FROM space_policy WHERE uri = ?", uri)
+        return json.loads(row["policy_json"]) if row else None
 
-    def get_active_config(self, uri: str) -> dict:
-        space, config = self.get_space(uri), self.get_config(uri)
-        if not space or space["deleted_at"] or not config:
+    def get_active_policy(self, uri: str) -> dict:
+        space, policy = self.get_space(uri), self.get_policy(uri)
+        if not space or space["deleted_at"] or not policy:
             raise space_not_found()
-        return config
+        return policy
 
     def ensure_space(self, uri: str) -> None:
         ref = SpaceRef.parse(uri)
@@ -192,27 +223,17 @@ class SpaceStore:
         )
         self.sql.exec("INSERT OR IGNORE INTO space_repo (space, set_hash, rev) VALUES (?, NULL, NULL)", uri)
 
-    def create_space(self, uri: str, config: dict) -> None:
-        if self.get_config(uri):
+    def create_space(self, uri: str, policy: dict) -> None:
+        if self.get_policy(uri):
             raise XrpcError("SpaceAlreadyExists", "Space already exists")
         # A recreated space is a new space: deletion notices still owed for the old
         # one would purge the syncers' copies of the new one.
         self.sql.exec("DELETE FROM space_deleted_notification_retry WHERE space = ?", uri)
         self.ensure_space(uri)
-        self.sql.exec(
-            """INSERT INTO simplespace_config (uri, read_policy, read_managing_app, write_policy,
-               write_managing_app, app_access_type, app_allowed) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            uri, config["read_policy"], config["read_managing_app"], config["write_policy"],
-            config["write_managing_app"], config["app_access_type"], config["app_allowed"],
-        )
+        self.set_policy(uri, policy)
 
-    def update_config(self, uri: str, config: dict) -> None:
-        self.get_active_config(uri)
-        for column, value in config.items():
-            if column not in ("read_policy", "read_managing_app", "write_policy", "write_managing_app",
-                              "app_access_type", "app_allowed"):
-                raise ValueError(column)
-            self.sql.exec(f"UPDATE simplespace_config SET {column} = ? WHERE uri = ?", value, uri)
+    def set_policy(self, uri: str, policy: dict) -> None:
+        self.sql.exec("INSERT OR REPLACE INTO space_policy (uri, policy_json) VALUES (?, ?)", uri, json.dumps(policy))
 
     def delete_space(self, uri: str) -> list[dict]:
         """Tombstone a space this account governs and drop its own repo there; returns the
@@ -228,8 +249,8 @@ class SpaceStore:
         self.sql.exec(
             "DELETE FROM space_record_blob WHERE record_uri IN (SELECT uri FROM space_record WHERE space = ?)", uri
         )
-        self.sql.exec("DELETE FROM simplespace_config WHERE uri = ?", uri)
-        for table in ("simplespace_member", "space_writer", "space_credential_recipient", "space_record",
+        self.sql.exec("DELETE FROM space_policy WHERE uri = ?", uri)
+        for table in ("memberspace_member", "space_writer", "space_credential_recipient", "space_record",
                       "space_record_oplog", "space_repo", "space_notification_retry"):
             self.sql.exec(f"DELETE FROM {table} WHERE space = ?", uri)
         return [{"service_did": row["service_did"], "expires_at": row["expires_at"]} for row in recipients]
@@ -248,31 +269,35 @@ class SpaceStore:
         query += " ORDER BY uri ASC LIMIT ?"
         return [row["uri"] for row in self.sql.exec(query, *params, limit)]
 
-    # Members
+    # Members (memberspace)
 
     def get_member(self, space: str, did: str) -> dict | None:
-        row = self._one("SELECT can_read, can_write FROM simplespace_member WHERE space = ? AND did = ?", space, did)
+        row = self._one("SELECT can_read, can_write FROM memberspace_member WHERE space = ? AND did = ?", space, did)
         return {"read": bool(row["can_read"]), "write": bool(row["can_write"])} if row else None
 
     def put_member(self, space: str, did: str, read: bool, write: bool) -> None:
-        self.get_active_config(space)
         self.sql.exec(
-            """INSERT INTO simplespace_member (space, did, can_read, can_write) VALUES (?, ?, ?, ?)
+            """INSERT INTO memberspace_member (space, did, can_read, can_write) VALUES (?, ?, ?, ?)
                ON CONFLICT (space, did) DO UPDATE SET can_read = excluded.can_read, can_write = excluded.can_write""",
             space, did, 1 if read else 0, 1 if write else 0,
         )
 
     def remove_member(self, space: str, did: str) -> None:
-        self.get_active_config(space)
-        self.sql.exec("DELETE FROM simplespace_member WHERE space = ? AND did = ?", space, did)
+        self.sql.exec("DELETE FROM memberspace_member WHERE space = ? AND did = ?", space, did)
 
-    def list_members(self, space: str, limit: int, cursor: str | None) -> list[dict]:
-        self.get_active_config(space)
-        query, params = "SELECT did, can_read, can_write FROM simplespace_member WHERE space = ?", [space]
+    def remove_all_members(self, space: str) -> None:
+        self.sql.exec("DELETE FROM memberspace_member WHERE space = ?", space)
+
+    def list_members(self, space: str, limit: int | None = None, cursor: str | None = None) -> list[dict]:
+        query, params = "SELECT did, can_read, can_write FROM memberspace_member WHERE space = ?", [space]
         if cursor:
             query += " AND did > ?"
             params.append(cursor)
-        rows = self.sql.exec(query + " ORDER BY did ASC LIMIT ?", *params, limit)
+        query += " ORDER BY did ASC"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
+        rows = self.sql.exec(query, *params)
         return [{"did": row["did"], "read": bool(row["can_read"]), "write": bool(row["can_write"])} for row in rows]
 
     # The writer set (space host)
@@ -301,20 +326,27 @@ class SpaceStore:
             sequence["prevSpaceRev"] = prev_space_rev
         return sequence
 
-    def list_writers(self, space: str, limit: int, cursor: str | None) -> list[dict]:
-        self.get_active_config(space)
+    def remove_writer(self, space: str, did: str) -> None:
+        self.sql.exec("DELETE FROM space_writer WHERE space = ? AND did = ?", space, did)
+
+    def list_writers(self, space: str, limit: int | None, cursor: str | None) -> list[dict]:
+        self.get_active_policy(space)
         query, params = "SELECT did, repo_rev, hash, space_rev FROM space_writer WHERE space = ?", [space]
         if cursor:
             query += " AND space_rev > ?"
             params.append(cursor)
-        rows = self.sql.exec(query + " ORDER BY space_rev ASC LIMIT ?", *params, limit)
+        query += " ORDER BY space_rev ASC"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
+        rows = self.sql.exec(query, *params)
         return [{"did": r["did"], "repoRev": r["repo_rev"], "data": bytes(r["hash"]), "spaceRev": r["space_rev"]}
                 for r in rows]
 
     # Notification recipients (space host)
 
     def register_recipient(self, space: str, service_did: str, endpoint: str) -> str:
-        self.get_active_config(space)
+        self.get_active_policy(space)
         expires = (datetime.now(timezone.utc) + REGISTRATION_TTL).isoformat(timespec="milliseconds")
         expires = expires.replace("+00:00", "Z")
         self.sql.exec(
@@ -326,7 +358,7 @@ class SpaceStore:
         return expires
 
     def unregister_recipient(self, space: str, service_did: str) -> None:
-        self.get_active_config(space)
+        self.get_active_policy(space)
         self.sql.exec("DELETE FROM space_credential_recipient WHERE space = ? AND service_did = ?", space, service_did)
 
     def get_recipients(self, space: str) -> list[dict]:
@@ -354,11 +386,7 @@ class SpaceStore:
         {rev, set_hash} or None for an empty batch."""
         if not writes:
             return None
-        if SpaceRef.parse(space).did == did:
-            existing = self.get_space(space)
-            if not existing or existing["deleted_at"]:
-                raise space_not_found()
-        self.ensure_space(space)
+        self._ensure_own_repo(did, space)
         state = self.get_repo_state(space)
         set_hash = LtHash(bytes(state["set_hash"]) if state and state["set_hash"] else None)
         rev = next_tid(state["rev"] if state else None)
@@ -400,6 +428,81 @@ class SpaceStore:
         state_bytes = set_hash.state()
         self.sql.exec("UPDATE space_repo SET set_hash = ?, rev = ? WHERE space = ?", state_bytes, rev, space)
         return {"rev": rev, "set_hash": state_bytes}
+
+    def list_collections(self, space: str) -> list[str]:
+        return [row["collection"] for row in
+                self.sql.exec("SELECT DISTINCT collection FROM space_record WHERE space = ?", space)]
+
+    def _ensure_own_repo(self, did: str, space: str) -> None:
+        """A repo in the account's own space needs the space; any other is created on demand."""
+        if SpaceRef.parse(space).did == did:
+            existing = self.get_space(space)
+            if not existing or existing["deleted_at"]:
+                raise space_not_found()
+        self.ensure_space(space)
+
+    def _set_repo_from_records(self, space: str, rev: str) -> dict:
+        set_hash = LtHash()
+        for row in self.sql.exec("SELECT collection, rkey, cid FROM space_record WHERE space = ?", space):
+            apply_op(set_hash, row["collection"], row["rkey"], row["cid"], None)
+        state_bytes = set_hash.state()
+        self.sql.exec("UPDATE space_repo SET set_hash = ?, rev = ? WHERE space = ?", state_bytes, rev, space)
+        return {"rev": rev, "set_hash": state_bytes}
+
+    def clear_records(self, space: str, keep: tuple[str, ...]) -> dict | None:
+        """Delete every record outside `keep` and the oplog, at a new rev; None when there
+        was nothing to delete."""
+        state = self.get_repo_state(space)
+        if not state:
+            return None
+        marks = ",".join("?" * len(keep))
+        where = f"space = ? AND collection NOT IN ({marks})" if keep else "space = ?"
+        doomed = self.sql.exec(f"SELECT uri FROM space_record WHERE {where}", space, *keep)
+        if not doomed:
+            return None
+        self.sql.exec(f"DELETE FROM space_record_blob WHERE record_uri IN (SELECT uri FROM space_record WHERE {where})",
+                      space, *keep)
+        self.sql.exec(f"DELETE FROM space_record WHERE {where}", space, *keep)
+        self.sql.exec("DELETE FROM space_record_oplog WHERE space = ?", space)
+        return self._set_repo_from_records(space, next_tid(state["rev"]))
+
+    def import_repo(self, did: str, space: str, records: list[tuple[str, str, str, bytes]]) -> dict:
+        """Replace the account's repo in `space` with (collection, rkey, cid, value)
+        records already checked against their CIDs, at a new rev and no history."""
+        self._ensure_own_repo(did, space)
+        self.sql.exec(
+            "DELETE FROM space_record_blob WHERE record_uri IN (SELECT uri FROM space_record WHERE space = ?)", space
+        )
+        self.sql.exec("DELETE FROM space_record WHERE space = ?", space)
+        self.sql.exec("DELETE FROM space_record_oplog WHERE space = ?", space)
+        state = self.get_repo_state(space)
+        rev = next_tid(state["rev"] if state else None)
+        ref, indexed_at = SpaceRef.parse(space), now_iso()
+        for collection, rkey, cid, value in records:
+            uri = ref.record_uri(did, collection, rkey)
+            self.sql.exec(
+                """INSERT INTO space_record (uri, space, collection, rkey, cid, value, repo_rev, indexed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                uri, space, collection, rkey, cid, value, rev, indexed_at,
+            )
+            # Blobs are uploaded after the import, so they are associated unchecked.
+            for blob_cid, _ in find_blob_refs(cbor.decode(value)):
+                self.sql.exec("INSERT OR IGNORE INTO space_record_blob (blob_cid, record_uri) VALUES (?, ?)",
+                              blob_cid, uri)
+        return self._set_repo_from_records(space, rev)
+
+    def import_space(self, uri: str, policy: dict, members: list[dict], writers: list[dict]) -> None:
+        """Replace the policy, member list and writer set of a space (a migration's
+        importSpaceMeta); revives a tombstone, since the archive is the newer truth."""
+        self.ensure_space(uri)
+        self.set_policy(uri, policy)
+        self.remove_all_members(uri)
+        for member in members:
+            self.put_member(uri, member["did"], member["read"], member["write"])
+        self.sql.exec("DELETE FROM space_writer WHERE space = ?", uri)
+        for writer in writers:
+            self.sql.exec("INSERT INTO space_writer (space, did, repo_rev, hash, space_rev) VALUES (?, ?, ?, ?, ?)",
+                          uri, writer["did"], writer["rev"], writer["data"], writer["spaceRev"])
 
     def commit(self, space: str, repo: str) -> dict | None:
         """The repo's current commit; None when it has never been written to."""
