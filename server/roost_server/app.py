@@ -14,6 +14,7 @@ environment variables, plus storage:
   S3_BUCKET, S3_ENDPOINT_URL, S3_REGION, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY
                          blob bytes in S3 or R2 (R2: S3_ENDPOINT_URL=https://<account>.r2.cloudflarestorage.com)
   ROOST_BLOB_DIR         or: a directory for blob bytes (default ROOST_DATA_DIR/blobs)
+  ROOST_SEQ_FLOOR        number firehose events above this (taking over a hostname from another host)
   ROOST_ALLOW_PRIVATE_FETCH=1   let outbound fetches reach private addresses (local dev only)
 """
 
@@ -52,7 +53,7 @@ def build_env(environ: dict, *, backend=None, blob_store=None, http=None) -> Env
     blob_store = blob_store or open_blobs(environ)
     http = http or Http(allow_private=environ.get("ROOST_ALLOW_PRIVATE_FETCH") == "1")
     firehose = Firehose(backend)
-    firehose.init_schema()
+    firehose.init_schema(int(environ.get("ROOST_SEQ_FLOOR") or 0))
     env = Env(environ, backend, blob_store, http, firehose)
     env.backend = backend
     env.blob_store = blob_store

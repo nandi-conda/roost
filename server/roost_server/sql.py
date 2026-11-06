@@ -239,6 +239,14 @@ class SqliteBackend:
         with self._sequencer_lock:
             yield SqliteSql(self._sequencer)
 
+    def raise_seq_floor(self, floor: int) -> None:
+        """The next firehose seq is above `floor` (see Firehose.init_schema)."""
+        with self._sequencer_lock, self._sequencer:
+            self._sequencer.execute("INSERT INTO sqlite_sequence (name, seq) SELECT 'firehose_events', 0 "
+                                    "WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'firehose_events')")
+            self._sequencer.execute("UPDATE sqlite_sequence SET seq = ? WHERE name = 'firehose_events' AND seq < ?",
+                                    (floor, floor))
+
     def close(self) -> None:
         for connection, _ in self._accounts.values():
             connection.close()
@@ -342,6 +350,16 @@ class PostgresBackend:
     def sequencer_session(self):
         with self._pool.connection() as connection:
             yield PostgresSql(PostgresSession(connection), SEQUENCER_SCHEMA)
+
+    def raise_seq_floor(self, floor: int) -> None:
+        """The next firehose seq is above `floor` (see Firehose.init_schema)."""
+        with self._pool.connection() as connection:
+            connection.execute("SELECT pg_advisory_xact_lock(%s)", (_lock_key("sequencer"),))
+            name = connection.execute(
+                f"SELECT pg_get_serial_sequence('\"{SEQUENCER_SCHEMA}\".firehose_events', 'seq') AS name").fetchone()["name"]
+            state = connection.execute(f"SELECT last_value, is_called FROM {name}").fetchone()
+            if (state["last_value"] if state["is_called"] else state["last_value"] - 1) < floor:
+                connection.execute("SELECT setval(%s, %s)", (name, floor))
 
     def close(self) -> None:
         self._pool.close()

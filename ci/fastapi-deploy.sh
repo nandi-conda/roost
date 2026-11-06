@@ -8,6 +8,8 @@
 #   DATABASE_URL         Postgres URL, e.g. Neon's pooled URL
 #   S3_BUCKET, S3_ENDPOINT_URL, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY   blob bucket (R2 works)
 #   OAUTH_NONCE_SECRET, ROOKERY_OPERATOR_TOKEN_SHA256
+#   ROOKERY_OPERATOR_TOKEN  the operator token itself: with an app deploy token, the
+#                        bundle gets its SHA-256 and an OAUTH_NONCE_SECRET derived from it
 # Each secret is copied onto the app (as a FastAPI Cloud secret) before the deploy.
 # Without DATABASE_URL / S3_BUCKET the app runs on SQLite and blob files under
 # /tmp/roost: EPHEMERAL, lost on every restart or redeploy, one copy per replica.
@@ -131,7 +133,18 @@ else
     echo "ROOKERY_RELAY_HOSTS=bsky.network"
     echo "CLOUDFLARE_ZONE_ID=18cbd0a8e108d62f7badcb3651cb160b"
     echo "ROOST_DATA_DIR=/tmp/roost"
-    echo "OAUTH_NONCE_SECRET=$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+    echo "ROOST_SEQ_FLOOR=10000"  # past the Worker's last firehose seq (227 at cutover), so relay cursors stay valid
+    if [ -n "${ROOKERY_OPERATOR_TOKEN:-}" ]; then
+      # Stable across deploys; only hashes of the token go in the bundle.
+      python3 - <<'PY'
+import hashlib, os
+token = os.environ["ROOKERY_OPERATOR_TOKEN"].encode()
+print("ROOKERY_OPERATOR_TOKEN_SHA256=" + hashlib.sha256(token).hexdigest())
+print("OAUTH_NONCE_SECRET=" + hashlib.sha256(b"roost-oauth-nonce\0" + token).hexdigest())
+PY
+    else
+      echo "OAUTH_NONCE_SECRET=$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+    fi
   } > "$BUNDLE/deploy.env"
   echo "WARNING: unless DATABASE_URL is set on the app, storage is EPHEMERAL (/tmp/roost)"
 fi

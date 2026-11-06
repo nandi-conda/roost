@@ -7,7 +7,9 @@ document (PDS endpoint and handle) at itself and ask the relays to crawl it.
 
     FROM=https://old.example TO=https://new.example uv run python scripts/migrate_host.py [did ...]
 
-With no DIDs it moves every repo FROM lists. Both hosts must accept the same
+With no DIDs it moves every repo FROM lists. When TO already serves FROM's
+hostname (a cutover: TO is reached at another URL until DNS moves), DIDs
+already name the right PDS, so PLC and the relays are left alone. Both hosts must accept the same
 operator token: ROOKERY_OPERATOR_TOKEN, or else the file
 `pixi run cf-operator-token` saved. Re-running is safe: an account TO already has is only re-synced.
 """
@@ -59,6 +61,8 @@ def main() -> None:
     auth = {"authorization": f"Bearer {token}"}
 
     with httpx.Client(timeout=120) as http:
+        server_did = lambda host: ok(http.get(f"{host}/xrpc/com.atproto.server.describeServer"), "describeServer").json()["did"]
+        same_host = server_did(source) == server_did(target)
         dids = sys.argv[1:] or list_dids(http, source)
         print(f"moving {len(dids)} account(s) from {source} to {target}")
         for did in dids:
@@ -75,10 +79,15 @@ def main() -> None:
                 handle = result["handle"]
                 print(f"{did}: imported {handle} (rev {result['rev']}, {result['blocks']} blocks, {result['blobs']} blobs, "
                       f"{result['agents']} agents, {result['procs']} procs)")
+            if same_host:
+                continue
             synced = ok(http.post(f"{target}/operator/identity/sync", json={"did": did, "handle": handle}, headers=auth),
                         f"identity sync {did}").json()
             print(f"{did}: PLC now names {synced['pds']} as the PDS of {synced['handle']}")
 
+        if same_host:
+            print(f"{target} serves {source}'s hostname: PLC and relays unchanged; move DNS next")
+            return
         hostname = urlsplit(target).hostname
         for relay in RELAYS:
             ok(http.post(f"{relay}/xrpc/com.atproto.sync.requestCrawl", json={"hostname": hostname}), f"requestCrawl {relay}")

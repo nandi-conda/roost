@@ -4,3 +4,10 @@ name = "deploy"
 branches = ["main"]
 timeout = 1800
 run = "bash ci/fastapi-deploy.sh"
+
+# Push to the "cutover" branch to copy the Worker's accounts into the app.
+[[job]]
+name = "migrate"
+branches = ["cutover"]
+timeout = 1800
+run = "bash ci/migrate.sh"

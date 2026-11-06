@@ -132,6 +132,36 @@ def test_firehose_cursor_errors(server):
         assert header == {"op": -1} and body["error"] == "FutureCursor"
 
 
+def test_seq_floor_numbers_events_above_the_old_hosts_cursor(tmp_path):
+    http = Http()
+    http.routes[DEFAULT_VARS["ROOKERY_PLC_URL"]] = Plc()
+    backend = SqliteBackend(":memory:")
+    env = build_env(dict(DEFAULT_VARS, ROOST_SEQ_FLOOR="500"), backend=backend, blob_store=MemoryBlobs(), http=http)
+    env.firehose.init_schema(100)  # a lower floor on a later start changes nothing
+    with TestClient(create_app(env=env, public_dir=tmp_path), base_url=ORIGIN) as client:
+        signup(client, "srv-floor")
+        with client.websocket_connect(f"{FIREHOSE}?cursor=500") as ws:
+            assert frame(ws.receive_bytes())[1]["seq"] == 501
+
+
+@pytest.mark.skipif(not os.environ.get("ROOST_TEST_DATABASE_URL"), reason="needs ROOST_TEST_DATABASE_URL")
+def test_seq_floor_on_postgres():
+    from server_env import _postgres_backend
+    from roost_server.platform import Firehose
+
+    backend, drop = _postgres_backend()
+    try:
+        firehose = Firehose(backend)
+        firehose.init_schema(500)
+        firehose.init_schema(100)
+        with backend.sequencer_session() as sql:
+            rows = sql.exec("INSERT INTO firehose_events (did, event_type, payload) VALUES (?, ?, ?) RETURNING seq",
+                            "did:plc:x", "identity", b"\x00")
+        assert rows[0]["seq"] == 501
+    finally:
+        drop()
+
+
 # SQL
 
 @pytest.mark.parametrize("sqlite,postgres", [

@@ -155,9 +155,14 @@ class Firehose:
         self._backend = backend
         self._changed = asyncio.Event()
 
-    def init_schema(self) -> None:
+    def init_schema(self, seq_floor: int = 0) -> None:
+        """seq_floor: start numbering above it. A host taking over another's
+        hostname sets it past the old host's last seq, because relays resume
+        from their cursor and a cursor ahead of us is a FutureCursor error."""
         with self._backend.sequencer_session() as sql:
             Sequencer(sql, lambda: []).init_schema()
+        if seq_floor:
+            self._backend.raise_seq_floor(seq_floor)
 
     def notify(self) -> None:
         self._changed.set()
