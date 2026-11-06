@@ -87,8 +87,10 @@ if [ "$token_kind" = user ]; then
 else
   # An app deploy token deploys one app; FASTAPI_CLOUD_APP_ID names it.
   export FASTAPI_CLOUD_TOKEN=$TOKEN
-  app=${FASTAPI_CLOUD_APP_ID:?FASTAPI_TOKEN is an app deploy token: also set the FASTAPI_CLOUD_APP_ID secret (the app id from the dashboard)}
-  url="https://${ROOKERY_HOSTNAME:-$APP_NAME.fastapicloud.dev}"
+  read -r app slug url < <(uv run --frozen python "$REPO/ci/whichapp.py") || true
+  app=${FASTAPI_CLOUD_APP_ID:-${app:-}}
+  [ -n "$app" ] || { echo "set the FASTAPI_CLOUD_APP_ID secret (the app id from the dashboard)" >&2; exit 1; }
+  if [ "${url:--}" = "-" ]; then url="https://${slug:-$APP_NAME}.fastapicloud.dev"; fi
 fi
 host=${ROOKERY_HOSTNAME:-$(python3 -c "import sys, urllib.parse; print(urllib.parse.urlsplit(sys.argv[1]).hostname)" "$url")}
 echo "app $app at https://$host"
