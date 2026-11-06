@@ -95,23 +95,29 @@ fi
 host=${ROOKERY_HOSTNAME:-$(python3 -c "import sys, urllib.parse; print(urllib.parse.urlsplit(sys.argv[1]).hostname)" "$url")}
 echo "app $app at https://$host"
 
-setvar() {  # name value [--secret]
-  printf '%s' "$2" | fc cloud env set --app-id "$app" ${3:-} --value-stdin --no-redeploy "$1" >/dev/null
-  echo "set $1"
-}
-setvar ROOKERY_HOSTNAME "$host"
-setvar ROOKERY_HANDLE_DOMAIN "${ROOKERY_HANDLE_DOMAIN:-.$host}"
-setvar ROOKERY_PLC_URL "${ROOKERY_PLC_URL:-https://plc.directory}"
-if [ -z "${DATABASE_URL:-}" ] || [ -z "${S3_BUCKET:-}" ]; then
-  echo "WARNING: no DATABASE_URL and/or S3_BUCKET secret: storage is EPHEMERAL (/tmp/roost), lost on restart"
-  setvar ROOST_DATA_DIR /tmp/roost
-fi
-[ -n "${S3_BUCKET:-}" ] && setvar S3_BUCKET "$S3_BUCKET" && setvar S3_ENDPOINT_URL "$S3_ENDPOINT_URL"
-for name in DATABASE_URL S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY OAUTH_NONCE_SECRET ROOKERY_OPERATOR_TOKEN_SHA256; do
-  if [ -n "${!name:-}" ]; then setvar "$name" "${!name}" --secret; fi
-done
-if [ -z "${OAUTH_NONCE_SECRET:-}" ] && ! fc cloud env list --app-id "$app" --json | grep -q '"OAUTH_NONCE_SECRET"'; then
-  setvar OAUTH_NONCE_SECRET "$(python3 -c 'import secrets; print(secrets.token_hex(32))')" --secret
+if [ "$token_kind" = user ]; then
+  setvar() {  # name value [--secret]
+    printf '%s' "$2" | fc cloud env set --app-id "$app" ${3:-} --value-stdin --no-redeploy "$1" >/dev/null
+    echo "set $1"
+  }
+  setvar ROOKERY_HOSTNAME "$host"
+  setvar ROOKERY_HANDLE_DOMAIN "${ROOKERY_HANDLE_DOMAIN:-.$host}"
+  setvar ROOKERY_PLC_URL "${ROOKERY_PLC_URL:-https://plc.directory}"
+  if [ -z "${DATABASE_URL:-}" ] || [ -z "${S3_BUCKET:-}" ]; then
+    echo "WARNING: no DATABASE_URL and/or S3_BUCKET secret: storage is EPHEMERAL (/tmp/roost), lost on restart"
+    setvar ROOST_DATA_DIR /tmp/roost
+  fi
+  [ -n "${S3_BUCKET:-}" ] && setvar S3_BUCKET "$S3_BUCKET" && setvar S3_ENDPOINT_URL "$S3_ENDPOINT_URL"
+  for name in DATABASE_URL S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY OAUTH_NONCE_SECRET ROOKERY_OPERATOR_TOKEN_SHA256; do
+    if [ -n "${!name:-}" ]; then setvar "$name" "${!name}" --secret; fi
+  done
+  if [ -z "${OAUTH_NONCE_SECRET:-}" ] && ! fc cloud env list --app-id "$app" --json | grep -q '"OAUTH_NONCE_SECRET"'; then
+    setvar OAUTH_NONCE_SECRET "$(python3 -c 'import secrets; print(secrets.token_hex(32))')" --secret
+  fi
+else
+  echo "an app deploy token can't set app variables; set them in the dashboard (Environment Variables):"
+  echo "  ROOKERY_HOSTNAME=$host ROOKERY_HANDLE_DOMAIN=.$host ROOKERY_PLC_URL=https://plc.directory"
+  echo "  OAUTH_NONCE_SECRET=<random hex, secret>, and DATABASE_URL + S3_* (or ROOST_DATA_DIR=/tmp/roost, ephemeral)"
 fi
 
 fc deploy --app-id "$app"
