@@ -52,11 +52,15 @@ copies the forge secrets onto it, and runs `fastapi deploy`. Forge secrets:
 | secret | kind |
 |---|---|
 | `FASTAPI_TOKEN` | FastAPI Cloud user token (required) |
-| `DATABASE_URL` | Postgres URL, e.g. Neon's pooled connection string (required) |
-| `S3_BUCKET`, `S3_ENDPOINT_URL`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | blob bucket (required) |
-| `OAUTH_NONCE_SECRET` | random hex (required) |
+| `DATABASE_URL` | Postgres URL, e.g. Neon's pooled connection string |
+| `S3_BUCKET`, `S3_ENDPOINT_URL`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | blob bucket |
+| `OAUTH_NONCE_SECRET` | random hex; generated once and kept on the app if absent |
 | `ROOKERY_OPERATOR_TOKEN_SHA256` | optional, enables operator routes |
 | `ROOKERY_HOSTNAME`, `ROOKERY_HANDLE_DOMAIN` | optional; default `<app>.fastapicloud.dev` |
+
+Without `DATABASE_URL` or `S3_BUCKET` the app runs on SQLite and files under
+`/tmp/roost`: ephemeral, lost on every restart, redeploy or scale-to-zero, and
+per replica. Fine for a first look, not for accounts anyone keeps.
 
 GitHub pushes do not trigger it; the Cloudflare Worker deploy is separate.
 

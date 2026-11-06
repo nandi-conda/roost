@@ -5,10 +5,13 @@
 #
 # Forge secrets (repo nandi.uk/roost):
 #   FASTAPI_TOKEN        FastAPI Cloud user token (required)
-#   DATABASE_URL         Postgres URL, e.g. Neon's pooled URL (required)
-#   S3_BUCKET, S3_ENDPOINT_URL, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY   blob bucket (required; R2 works)
-#   OAUTH_NONCE_SECRET   (required), ROOKERY_OPERATOR_TOKEN_SHA256 (optional)
+#   DATABASE_URL         Postgres URL, e.g. Neon's pooled URL
+#   S3_BUCKET, S3_ENDPOINT_URL, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY   blob bucket (R2 works)
+#   OAUTH_NONCE_SECRET, ROOKERY_OPERATOR_TOKEN_SHA256
 # Each secret is copied onto the app (as a FastAPI Cloud secret) before the deploy.
+# Without DATABASE_URL / S3_BUCKET the app runs on SQLite and blob files under
+# /tmp/roost: EPHEMERAL, lost on every restart or redeploy, one copy per replica.
+# Without OAUTH_NONCE_SECRET one is generated once and kept on the app.
 # ROOKERY_HOSTNAME defaults to the app's own <slug>.fastapicloud.dev host.
 set -euo pipefail
 APP_NAME=${APP_NAME:-roost}
@@ -16,13 +19,10 @@ TOKEN=${FASTAPI_TOKEN:?FASTAPI_TOKEN secret is not set (a FastAPI Cloud user tok
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$(mktemp -d)
 
-missing=()
-for name in DATABASE_URL S3_BUCKET S3_ENDPOINT_URL S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY OAUTH_NONCE_SECRET; do
-  [ -n "${!name:-}" ] || missing+=("$name")
-done
-if [ ${#missing[@]} -gt 0 ]; then
-  echo "missing forge secrets: ${missing[*]}" >&2
-  exit 1
+if [ -n "${S3_BUCKET:-}" ]; then
+  for name in S3_ENDPOINT_URL S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY; do
+    [ -n "${!name:-}" ] || { echo "S3_BUCKET is set but $name is not" >&2; exit 1; }
+  done
 fi
 
 if ! command -v uv >/dev/null; then
@@ -73,10 +73,16 @@ setvar() {  # name value [--secret]
 setvar ROOKERY_HOSTNAME "$host"
 setvar ROOKERY_HANDLE_DOMAIN "${ROOKERY_HANDLE_DOMAIN:-.$host}"
 setvar ROOKERY_PLC_URL "${ROOKERY_PLC_URL:-https://plc.directory}"
-setvar S3_BUCKET "$S3_BUCKET"
-setvar S3_ENDPOINT_URL "$S3_ENDPOINT_URL"
+if [ -z "${DATABASE_URL:-}" ] || [ -z "${S3_BUCKET:-}" ]; then
+  echo "WARNING: no DATABASE_URL and/or S3_BUCKET secret: storage is EPHEMERAL (/tmp/roost), lost on restart"
+  setvar ROOST_DATA_DIR /tmp/roost
+fi
+[ -n "${S3_BUCKET:-}" ] && setvar S3_BUCKET "$S3_BUCKET" && setvar S3_ENDPOINT_URL "$S3_ENDPOINT_URL"
 for name in DATABASE_URL S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY OAUTH_NONCE_SECRET ROOKERY_OPERATOR_TOKEN_SHA256; do
-  [ -n "${!name:-}" ] && setvar "$name" "${!name}" --secret
+  if [ -n "${!name:-}" ]; then setvar "$name" "${!name}" --secret; fi
 done
+if [ -z "${OAUTH_NONCE_SECRET:-}" ] && ! fc cloud env list --app-id "$app" --json | grep -q '"OAUTH_NONCE_SECRET"'; then
+  setvar OAUTH_NONCE_SECRET "$(python3 -c 'import secrets; print(secrets.token_hex(32))')" --secret
+fi
 
 fc deploy --app-id "$app"
