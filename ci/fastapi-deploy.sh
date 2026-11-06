@@ -49,21 +49,21 @@ mkdir -p "$FASTAPI_CLOUD_CLI_CONFIG_DIR"
 cd "$BUNDLE"
 uv sync --frozen -q
 fc() { uv run --frozen fastapi "$@"; }
-py() { uv run --frozen python -c "$@"; }
 
 printf '{"access_token": "%s"}' "$TOKEN" > "$FASTAPI_CLOUD_CLI_CONFIG_DIR/auth.json"
-team=$(fc cloud teams list --json | py 'import json,sys; print(json.loads(sys.stdin.read())["teams"][0]["id"])')
+# `--json` prints {"data": ...} or {"error": {"code", "message"}}; cloud_data.py prints one field of it.
+data() { uv run --frozen python "$REPO/ci/cloud_data.py" "$@"; }
+team=$(fc cloud teams list --json | data 'data["teams"][0]["id"]')
 apps=$(fc cloud apps list --json --team-id "$team")
-read -r app slug < <(py 'import json,sys
-for a in json.loads(sys.stdin.read())["apps"]:
-    if a.get("name") == sys.argv[1] or a.get("slug") == sys.argv[1]:
-        print(a["id"], a.get("slug") or a["name"]); break' "$APP_NAME" <<<"$apps") || true
+read -r app slug url < <(data 'next((" ".join([a["id"], a["slug"], a.get("url") or "-"]) for a in data["apps"] if a["name"] == sys.argv[2] or a["slug"] == sys.argv[2]), "")' "$APP_NAME" <<<"$apps") || true
 if [ -z "${app:-}" ]; then
   echo "creating app $APP_NAME"
-  out=$(fc cloud apps create --team-id "$team" --name "$APP_NAME" --json)
-  read -r app slug < <(py 'import json,sys; d=json.loads(sys.stdin.read()); d=d.get("app", d); print(d["id"], d.get("slug") or d["name"])' <<<"$out")
+  read -r app slug < <(fc cloud apps create --team-id "$team" --name "$APP_NAME" --json | data 'data["app"]["id"] + " " + data["app"]["slug"]')
+  url=-
 fi
-host=${ROOKERY_HOSTNAME:-$slug.fastapicloud.dev}
+[ -n "${app:-}" ] || { echo "could not find or create app $APP_NAME" >&2; exit 1; }
+if [ "${url:--}" = "-" ]; then url="https://$slug.fastapicloud.dev"; fi
+host=${ROOKERY_HOSTNAME:-$(python3 -c "import sys, urllib.parse; print(urllib.parse.urlsplit(sys.argv[1]).hostname)" "$url")}
 echo "app $app at https://$host"
 
 setvar() {  # name value [--secret]
