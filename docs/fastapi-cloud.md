@@ -44,18 +44,23 @@ Same variables as `wrangler.cloudflare.jsonc` (`ROOKERY_HOSTNAME`,
 
 ## deploy
 
-1. In the FastAPI Cloud dashboard, create the app, connect it to the GitHub
-   repo, and set its **Application Directory** to `server` (Settings).
-   Dependencies install from `server/pyproject.toml`; the entrypoint is
-   `main:app` (`[tool.fastapi]` there). `server/main.py` imports `../src/roost`,
-   so the whole repository must be uploaded: the GitHub integration clones it;
-   whether a CLI `fastapi deploy` uploads more than the app directory is not
-   documented, and main.py fails at startup with a clear error if it didn't.
-2. Connect Neon (Integrations) so `DATABASE_URL` is set, and add the variables above.
-3. Deploy. `/xrpc/com.atproto.server.describeServer` should answer on the app's
-   `fastapicloud.dev` URL.
+CI on the fileapi forge (repo `nandi.uk/roost`, `.forge/jobs.toml`) runs
+`ci/fastapi-deploy.sh` on every push to its main. The script bundles `server/`
+with `src/roost` and `public/`, finds or creates the FastAPI Cloud app `roost`,
+copies the forge secrets onto it, and runs `fastapi deploy`. Forge secrets:
 
-Local run: `cd server && ROOST_DATA_DIR=/tmp/roost ROOKERY_HOSTNAME=localhost
+| secret | kind |
+|---|---|
+| `FASTAPI_TOKEN` | FastAPI Cloud user token (required) |
+| `DATABASE_URL` | Postgres URL, e.g. Neon's pooled connection string (required) |
+| `S3_BUCKET`, `S3_ENDPOINT_URL`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | blob bucket (required) |
+| `OAUTH_NONCE_SECRET` | random hex (required) |
+| `ROOKERY_OPERATOR_TOKEN_SHA256` | optional, enables operator routes |
+| `ROOKERY_HOSTNAME`, `ROOKERY_HANDLE_DOMAIN` | optional; default `<app>.fastapicloud.dev` |
+
+GitHub pushes do not trigger it; the Cloudflare Worker deploy is separate.
+
+Local run: `cd server && ROOST_DATA_DIR=/tmp/roost ROOKERY_HOSTNAME=localhost ROOKERY_PLC_URL=https://plc.directory
 ROOKERY_HANDLE_DOMAIN=.localhost OAUTH_NONCE_SECRET=dev uv run fastapi dev`.
 
 ## tests

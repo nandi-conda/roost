@@ -1,0 +1,6 @@
+# fileapi forge CI (nandi.uk/roost): every push to main deploys server/ to FastAPI Cloud.
+[[job]]
+name = "deploy"
+branches = ["main"]
+timeout = 1800
+run = "bash ci/fastapi-deploy.sh"

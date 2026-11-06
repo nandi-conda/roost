@@ -36,12 +36,17 @@ from .blobs import open_blobs
 from .platform import Env, Firehose, Http
 from .sql import open_backend
 
-PUBLIC_DIR = Path(__file__).resolve().parents[2] / "public"
 METHODS = ["GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"]
 NO_BODY = (101, 204, 205, 304)
 
 
+REQUIRED = ("ROOKERY_HOSTNAME", "ROOKERY_HANDLE_DOMAIN", "ROOKERY_PLC_URL", "OAUTH_NONCE_SECRET")
+
+
 def build_env(environ: dict, *, backend=None, blob_store=None, http=None) -> Env:
+    missing = [name for name in REQUIRED if not environ.get(name)]
+    if missing:
+        raise RuntimeError(f"Missing environment variables: {', '.join(missing)}")
     backend = backend or open_backend(environ.get("DATABASE_URL"), environ.get("ROOST_DATA_DIR"))
     blob_store = blob_store or open_blobs(environ)
     http = http or Http(allow_private=environ.get("ROOST_ALLOW_PRIVATE_FETCH") == "1")
@@ -84,7 +89,7 @@ def _headers(request: Request) -> Headers:
     return Headers(joined.items())
 
 
-def create_app(environ: dict | None = None, *, env: Env | None = None, public_dir: Path = PUBLIC_DIR) -> FastAPI:
+def create_app(environ: dict | None = None, *, env: Env | None = None, public_dir: Path) -> FastAPI:
     environ = dict(os.environ) if environ is None else environ
     public = public_dir.resolve()
 
