@@ -64,10 +64,13 @@ class Account(SpaceMethods):
 
     def __init__(self, sql, sequencer, blobs):
         self.storage = RepoStorage(sql)
-        self.storage.init_schema()
-        self.spaces.init_schema()
         self.sequencer = sequencer
         self.blobs = blobs
+
+    def init_schema(self) -> None:
+        """Create or migrate the account's tables; once per storage, before any call."""
+        self.storage.init_schema()
+        self.spaces.init_schema()
 
     # Internals
 

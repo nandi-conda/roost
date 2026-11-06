@@ -1,0 +1,17 @@
+[project]
+name = "roost-server"
+version = "0.3.0"
+description = "roost (a fork of sol pbc's rookery) as a FastAPI app, for FastAPI Cloud or any ASGI host"
+license = "MIT"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi[standard]>=0.120",
+    "cryptography>=47",
+    "httpx>=0.28",
+    "psycopg[binary]>=3.2",
+    "psycopg-pool>=3.2",
+    "boto3>=1.35",
+]
+
+[tool.fastapi]
+entrypoint = "main:app"

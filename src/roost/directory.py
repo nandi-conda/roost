@@ -45,7 +45,7 @@ SCHEMA = [
   value TEXT NOT NULL,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 )""",
-    "INSERT OR IGNORE INTO config (key, value) VALUES ('invite_quota_default', '3')",
+    "INSERT INTO config (key, value) VALUES ('invite_quota_default', '3') ON CONFLICT DO NOTHING",
     """CREATE TABLE IF NOT EXISTS takedowns (
   did TEXT NOT NULL,
   handle TEXT NOT NULL,

@@ -466,7 +466,7 @@ async def notify_credential_revoked(request, env):
         raise invalid("credentials must be a list of credential ids")
     await ensure_revocations(env)
     await env.db.batch([
-        ("INSERT OR IGNORE INTO revoked_space_credentials (space, jti, revoked_at) VALUES (?, ?, datetime('now'))",
+        ("INSERT INTO revoked_space_credentials (space, jti, revoked_at) VALUES (?, ?, datetime('now')) ON CONFLICT DO NOTHING",
          [space, jti]) for jti in credentials[:1000]
     ])
     await env.db.run("DELETE FROM revoked_space_credentials WHERE revoked_at < datetime('now', '-2 hours')")

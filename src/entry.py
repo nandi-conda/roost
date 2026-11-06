@@ -14,19 +14,12 @@ from workers import fetch as runtime_fetch
 
 from roost import rpc
 from roost.account import Account
-from roost.app import handle
+from roost.app import ENV_VARS, handle
 from roost.net import HttpResponse
 from roost.sequencer import Sequencer
 from roost.web import Headers, Request
 
 SEQUENCER_NAME = "sequencer"
-VARS = (
-    "ROOKERY_HOSTNAME", "ROOKERY_HANDLE_DOMAIN", "ROOKERY_PLC_URL", "ROOKERY_VARIANT", "CF_ACCESS_TEAM_DOMAIN",
-    "CF_ACCESS_AUD", "ROOKERY_RELAY_HOSTS", "CLOUDFLARE_DNS_TOKEN", "CLOUDFLARE_ZONE_ID", "ROOKERY_AGENTBUS_ENDPOINT",
-    "ROOKERY_OPERATOR_TOKEN_SHA256", "OAUTH_NONCE_SECRET", "ROOKERY_KNOT_ADMIN_ADD_MEMBER_URL",
-    "ROOKERY_KNOT_ADMIN_SECRET", "HUB_WEBHOOK_URL", "HUB_WEBHOOK_SECRET", "ROOKERY_LEGACY_HOSTNAMES",
-    "ROOKERY_LEGACY_HANDLE_DOMAINS",
-)
 
 
 def _bytes(value) -> bytes:
@@ -150,7 +143,7 @@ class Env:
     """What roost.app sees: configuration attributes plus platform services."""
 
     def __init__(self, env, wait_until):
-        for name in VARS:
+        for name in ENV_VARS:
             value = getattr(env, name, None)
             setattr(self, name, value if isinstance(value, str) and value != "" else None)
         self._env = env
@@ -222,6 +215,7 @@ class AccountDurableObject(DurableObject):
     def __init__(self, ctx, env):
         super().__init__(ctx, env)
         self.account = Account(SqlStorage(ctx.storage.sql), SequencerClient(env), Blobs(env.BLOBS))
+        self.account.init_schema()
 
     async def rpc(self, request: str) -> str:
         return await rpc.serve(self.account, rpc.ACCOUNT_METHODS, request)
@@ -272,6 +266,7 @@ class SequencerDurableObject(DurableObject):
         self.sequencer = Sequencer(
             SqlStorage(ctx.storage.sql), lambda: [_Socket(ws) for ws in ctx.getWebSockets()],
         )
+        self.sequencer.init_schema()
 
     async def rpc(self, request: str) -> str:
         return await rpc.serve(_AsyncSequencer(self.sequencer), SEQUENCER_METHODS, request)

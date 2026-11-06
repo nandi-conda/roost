@@ -70,7 +70,7 @@ def test_startup_drops_null_status_from_stored_account_events(sequencer_do):
     )
     sequencer_do.sql.exec("DELETE FROM sequencer_migrations")
     sequencer_do.sql.exec("INSERT INTO firehose_events (did, event_type, payload) VALUES (?, 'account', ?)", "did:plc:x", frame)
-    Sequencer(sequencer_do.sql, lambda: [])
+    Sequencer(sequencer_do.sql, lambda: []).init_schema()
     assert account_bodies(sequencer_do) == [{"did": "did:plc:x", "active": True, "time": "2026-10-20T00:00:00.000Z", "seq": 1}]
 
 

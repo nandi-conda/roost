@@ -10,6 +10,15 @@ subscribe_repos(request) (the Sequencer DO), http (outbound fetch) and
 wait_until(coroutine).
 """
 
+# The configuration variables a platform copies onto env (None when unset or empty).
+ENV_VARS = (
+    "ROOKERY_HOSTNAME", "ROOKERY_HANDLE_DOMAIN", "ROOKERY_PLC_URL", "ROOKERY_VARIANT", "CF_ACCESS_TEAM_DOMAIN",
+    "CF_ACCESS_AUD", "ROOKERY_RELAY_HOSTS", "CLOUDFLARE_DNS_TOKEN", "CLOUDFLARE_ZONE_ID", "ROOKERY_AGENTBUS_ENDPOINT",
+    "ROOKERY_OPERATOR_TOKEN_SHA256", "OAUTH_NONCE_SECRET", "ROOKERY_KNOT_ADMIN_ADD_MEMBER_URL",
+    "ROOKERY_KNOT_ADMIN_SECRET", "HUB_WEBHOOK_URL", "HUB_WEBHOOK_SECRET", "ROOKERY_LEGACY_HOSTNAMES",
+    "ROOKERY_LEGACY_HANDLE_DOMAINS",
+)
+
 import asyncio
 import base64
 import hmac

@@ -16,7 +16,8 @@ Source layout:
 - `src/roost/directory.py` - D1 account directory
 - `src/roost/storage.py`, `repo.py`, `mst.py`, `cbor.py`, `car.py` - repo storage and atproto encodings
 - `src/roost/rpc.py` - the string RPC boundary between the Worker and Durable Objects
-- `tests/` - pytest suite; `tests/fakes.py` stands in for D1, R2, DOs, PLC and outbound HTTP
+- `server/` - the same app on FastAPI (FastAPI Cloud or any ASGI host): `roost_server/sql.py` puts D1 and the DOs on Postgres (schema per account) or SQLite, `blobs.py` R2 on S3, `platform.py` builds the `env` roost.app expects, `app.py` routes HTTP to `roost.app.handle` plus the firehose websocket. See docs/fastapi-cloud.md
+- `tests/` - pytest suite; `tests/fakes.py` stands in for D1, R2, DOs, PLC and outbound HTTP; `ROOST_TEST_BACKEND=sqlite|postgres` runs it on the server's storage (`tests/server_env.py`)
 
 ## Commands
 
@@ -24,6 +25,8 @@ Source layout:
 make install           # npm ci (wrangler) + uv sync (Python deps)
 uv run pytest -q       # Run tests
 uv run pywrangler dev  # Local development (needs uv >= 0.12.3)
+ROOST_TEST_BACKEND=postgres ROOST_TEST_DATABASE_URL=postgresql://... uv run pytest -q  # suite on Postgres
+cd server && ROOST_DATA_DIR=/tmp/roost uv run fastapi dev  # FastAPI app on SQLite (see docs/fastapi-cloud.md)
 pixi run cf-deploy     # Production deploy (operator only, see docs/cloudflare.md)
 ```
 
@@ -56,7 +59,7 @@ DID/handle resolution, and DPoP are the trust boundary.
 
 ## Verification
 
-- Always run `uv run pytest -q` before committing — all tests must pass.
+- Always run `uv run pytest -q` before committing — all tests must pass. SQL must run on SQLite (D1, DO) and Postgres (server/): write SQLite's dialect, use `ON CONFLICT` rather than `INSERT OR ...`, and run the suite with `ROOST_TEST_BACKEND=postgres` when SQL changes.
 - **One deploy workflow.** `.github/workflows/deploy.yml` runs the tests and `pixi run cf-deploy` on every push to main, with the `CLOUDFLARE_API_TOKEN` secret. Only that token lives in GitHub Actions: the operator token stays on the operator's machine, so `sync-identities` and other operator scripts still run locally (`just deploy`). Don't add other workflows.
 
 ## File Headers

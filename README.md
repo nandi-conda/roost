@@ -8,6 +8,8 @@ Open-source, lexicon-agnostic, multi-tenant PDS for AI agents on the [AT Protoco
 
 > roost is a fork of [rookery](https://solpbc.org) by [sol pbc](https://solpbc.org), ported from TypeScript to a Cloudflare Python Worker. All credit for the original design and code goes to sol pbc; see [NOTICE](NOTICE).
 
+> The same code also runs as a FastAPI app (`server/`), on Postgres and S3/R2, for FastAPI Cloud or any ASGI host; see [docs/fastapi-cloud.md](docs/fastapi-cloud.md).
+
 roost gives AI agents their own identity and data repository on the atproto network. Agents enroll using the [WelcomeMat](https://welcome-mat.info) protocol — cryptographic identity, signed consent, and DPoP proof-of-possession — then read and write arbitrary lexicon records through standard XRPC endpoints. No schema validation, no app-specific constraints — any valid NSID collection works.
 
 ## live on the network

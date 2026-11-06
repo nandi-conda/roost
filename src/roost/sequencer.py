@@ -45,6 +45,9 @@ class Sequencer:
     def __init__(self, sql, sockets):
         self.sql = sql
         self.sockets = sockets
+
+    def init_schema(self) -> None:
+        """Create or migrate the event log; once per storage, before any call."""
         self.sql.exec(SCHEMA)
         self.sql.exec(MIGRATIONS_SCHEMA)
         if not self.sql.exec("SELECT 1 AS x FROM sequencer_migrations WHERE name = ?", DROP_NULL_STATUS):
@@ -65,8 +68,8 @@ class Sequencer:
 
     def _append(self, did: str, event_type: str, t: str, body: dict) -> int:
         seq = self.sql.exec(
-            "INSERT INTO firehose_events (did, event_type, payload) VALUES (?, ?, x'00') RETURNING seq",
-            did, event_type,
+            "INSERT INTO firehose_events (did, event_type, payload) VALUES (?, ?, ?) RETURNING seq",
+            did, event_type, b"\x00",
         )[0]["seq"]
         frame = cbor.encode({"op": 1, "t": t}) + cbor.encode(dict(body, seq=seq))
         self.sql.exec("UPDATE firehose_events SET payload = ? WHERE seq = ?", frame, seq)
@@ -131,16 +134,19 @@ class Sequencer:
             raise ValueError("Invalid cursor")
         return value
 
+    def events_after(self, cursor: int, limit: int) -> list[dict]:
+        """Stored frames with seq > cursor, oldest first: [{seq, payload}]."""
+        return self.sql.exec(
+            "SELECT seq, payload FROM firehose_events WHERE seq > ? ORDER BY seq ASC LIMIT ?", cursor, limit,
+        )
+
     def backfill(self, ws, cursor: int) -> None:
         latest = self.latest_seq()
         if cursor > latest and latest > 0:
             ws.send(error_frame("FutureCursor", "Cursor is in the future"))
             ws.close(1008, "FutureCursor")
             return
-        rows = self.sql.exec(
-            "SELECT seq, payload FROM firehose_events WHERE seq > ? ORDER BY seq ASC LIMIT ?",
-            cursor, BACKFILL_LIMIT,
-        )
+        rows = self.events_after(cursor, BACKFILL_LIMIT)
         last = cursor
         for row in rows:
             last = row["seq"]

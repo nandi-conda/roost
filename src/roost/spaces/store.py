@@ -126,6 +126,8 @@ SCHEMA = [
 ]
 
 REGISTRATION_TTL = timedelta(days=1)
+UPSERT_POLICY = ("INSERT INTO space_policy (uri, policy_json) VALUES (?, ?) "
+                 "ON CONFLICT (uri) DO UPDATE SET policy_json = excluded.policy_json")
 
 
 def now_iso() -> str:
@@ -184,12 +186,13 @@ class SpaceStore:
             return
         for config in self.sql.exec("SELECT * FROM simplespace_config"):
             policy = simplespace_config_to_policy(config)
-            self.sql.exec("INSERT OR REPLACE INTO space_policy (uri, policy_json) VALUES (?, ?)",
+            self.sql.exec(UPSERT_POLICY,
                           config["uri"], json.dumps(policy))
             if policy["$type"] == MEMBERSPACE:
                 self.sql.exec(
-                    """INSERT OR REPLACE INTO memberspace_member (space, did, can_read, can_write)
-                       SELECT space, did, can_read, can_write FROM simplespace_member WHERE space = ?""",
+                    """INSERT INTO memberspace_member (space, did, can_read, can_write)
+                       SELECT space, did, can_read, can_write FROM simplespace_member WHERE space = ?
+                       ON CONFLICT (space, did) DO UPDATE SET can_read = excluded.can_read, can_write = excluded.can_write""",
                     config["uri"],
                 )
         self.sql.exec("DROP TABLE IF EXISTS simplespace_member")
@@ -221,7 +224,7 @@ class SpaceStore:
                ON CONFLICT (uri) DO UPDATE SET deleted_at = NULL""",
             uri, ref.did, ref.type, now_iso(),
         )
-        self.sql.exec("INSERT OR IGNORE INTO space_repo (space, set_hash, rev) VALUES (?, NULL, NULL)", uri)
+        self.sql.exec("INSERT INTO space_repo (space, set_hash, rev) VALUES (?, NULL, NULL) ON CONFLICT DO NOTHING", uri)
 
     def create_space(self, uri: str, policy: dict) -> None:
         if self.get_policy(uri):
@@ -233,7 +236,7 @@ class SpaceStore:
         self.set_policy(uri, policy)
 
     def set_policy(self, uri: str, policy: dict) -> None:
-        self.sql.exec("INSERT OR REPLACE INTO space_policy (uri, policy_json) VALUES (?, ?)", uri, json.dumps(policy))
+        self.sql.exec(UPSERT_POLICY, uri, json.dumps(policy))
 
     def delete_space(self, uri: str) -> list[dict]:
         """Tombstone a space this account governs and drop its own repo there; returns the
@@ -417,7 +420,7 @@ class SpaceStore:
                     if not known_blobs(blob_cid):
                         raise XrpcError("BlobNotFound", f"Could not find blob: {blob_cid}")
                     self.sql.exec(
-                        "INSERT OR IGNORE INTO space_record_blob (blob_cid, record_uri) VALUES (?, ?)", blob_cid, uri
+                        "INSERT INTO space_record_blob (blob_cid, record_uri) VALUES (?, ?) ON CONFLICT DO NOTHING", blob_cid, uri
                     )
             apply_op(set_hash, collection, rkey, cid, prev)
             self.sql.exec(
@@ -487,7 +490,7 @@ class SpaceStore:
             )
             # Blobs are uploaded after the import, so they are associated unchecked.
             for blob_cid, _ in find_blob_refs(cbor.decode(value)):
-                self.sql.exec("INSERT OR IGNORE INTO space_record_blob (blob_cid, record_uri) VALUES (?, ?)",
+                self.sql.exec("INSERT INTO space_record_blob (blob_cid, record_uri) VALUES (?, ?) ON CONFLICT DO NOTHING",
                               blob_cid, uri)
         return self._set_repo_from_records(space, rev)
 
@@ -630,5 +633,5 @@ class SpaceStore:
         return row["private_key_hex"] if row else None
 
     def set_kem_key_hex(self, private_key_hex: str) -> None:
-        self.sql.exec("INSERT OR IGNORE INTO space_kem_key (id, private_key_hex) VALUES (1, ?)", private_key_hex)
+        self.sql.exec("INSERT INTO space_kem_key (id, private_key_hex) VALUES (1, ?) ON CONFLICT DO NOTHING", private_key_hex)
 

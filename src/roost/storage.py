@@ -33,7 +33,7 @@ SCHEMA = [
         active INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       )""",
-    "INSERT OR IGNORE INTO repo_state (id) VALUES (1)",
+    "INSERT INTO repo_state (id) VALUES (1) ON CONFLICT DO NOTHING",
     """CREATE TABLE IF NOT EXISTS collections (
         collection TEXT PRIMARY KEY
       )""",
@@ -91,7 +91,8 @@ class RepoStorage:
         """Store a commit's new blocks, drop the ones it removed, and move the head."""
         for block_cid, raw in new_blocks.items():
             self.sql.exec(
-                "INSERT OR REPLACE INTO blocks (cid, bytes, rev) VALUES (?, ?, ?)",
+                "INSERT INTO blocks (cid, bytes, rev) VALUES (?, ?, ?) "
+                "ON CONFLICT (cid) DO UPDATE SET bytes = excluded.bytes, rev = excluded.rev",
                 str(block_cid), raw, rev,
             )
         for block_cid in removed:
@@ -108,7 +109,7 @@ class RepoStorage:
     # Collections and blobs
 
     def add_collection(self, collection: str) -> None:
-        self.sql.exec("INSERT OR IGNORE INTO collections (collection) VALUES (?)", collection)
+        self.sql.exec("INSERT INTO collections (collection) VALUES (?) ON CONFLICT DO NOTHING", collection)
 
     def get_collections(self) -> list[str]:
         return [row["collection"] for row in self.sql.exec("SELECT collection FROM collections ORDER BY collection")]
@@ -121,7 +122,7 @@ class RepoStorage:
 
     def insert_blob(self, cid: str, mime_type: str, size: int) -> None:
         self.sql.exec(
-            "INSERT OR IGNORE INTO blobs (cid, mime_type, size) VALUES (?, ?, ?)", cid, mime_type, size
+            "INSERT INTO blobs (cid, mime_type, size) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", cid, mime_type, size
         )
 
     def list_blobs(self, limit: int = 500, cursor: str | None = None) -> dict:

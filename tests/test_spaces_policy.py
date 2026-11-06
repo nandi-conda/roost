@@ -25,8 +25,8 @@ PERSONAL = {"$type": "com.atproto.personalspace.policy"}
 EMPTY_DIGEST = "e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad"
 
 
-def do_for(env, did):
-    row = env.db.connection.execute("SELECT do_id FROM accounts WHERE did = ?", (did,)).fetchone()
+async def do_for(env, did):
+    row = await env.db.first("SELECT do_id FROM accounts WHERE did = ?", did)
     return env.account_do(row["do_id"]).account
 
 
@@ -252,7 +252,7 @@ async def test_space_migrates_with_its_authority(client, env):
         "NotSpaceOwner"
 
     # The new host starts empty: the repo can't arrive before its space.
-    do = do_for(env, alice["did"])
+    do = await do_for(env, alice["did"])
     for table in ("space", "space_policy", "memberspace_member", "space_writer", "space_record", "space_repo",
                   "space_record_oplog"):
         do.spaces.sql.exec(f"DELETE FROM {table}")

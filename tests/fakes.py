@@ -7,13 +7,14 @@ boundary the Worker uses, and outbound HTTP routed to handlers."""
 
 import asyncio
 import json
+import os
 import sqlite3
 import uuid
 from urllib.parse import parse_qsl, urlsplit
 
 from roost import rpc
 from roost.account import Account
-from roost.app import handle
+from roost.app import ENV_VARS, handle
 from roost.cbor import CID
 from roost import cbor
 from roost.net import HttpResponse
@@ -118,6 +119,7 @@ class SequencerDO:
         self.sql = Sql()
         self.sockets: list[Socket] = []
         self.sequencer = Sequencer(self.sql, lambda: [s for s in self.sockets if not s.closed])
+        self.sequencer.init_schema()
 
     def connect(self, cursor: int | None = None) -> Socket:
         socket = Socket()
@@ -153,6 +155,7 @@ class AccountDO:
     def __init__(self, sequencer_do: SequencerDO, blobs: Blobs):
         self.sql = Sql()
         self.account = Account(self.sql, SequencerClient(sequencer_do), blobs)
+        self.account.init_schema()
         self.lock = asyncio.Lock()
 
     async def rpc(self, request: str) -> str:
@@ -229,13 +232,7 @@ DEFAULT_VARS = {
     # sha256("test-operator-token")
     "ROOKERY_OPERATOR_TOKEN_SHA256": "21a41ec35ffe053418f5ebab652c9b4cb07a643a9100640d18b635e0df503928",
 }
-VAR_NAMES = (
-    "ROOKERY_HOSTNAME", "ROOKERY_HANDLE_DOMAIN", "ROOKERY_PLC_URL", "ROOKERY_VARIANT", "CF_ACCESS_TEAM_DOMAIN",
-    "CF_ACCESS_AUD", "ROOKERY_RELAY_HOSTS", "CLOUDFLARE_DNS_TOKEN", "CLOUDFLARE_ZONE_ID", "ROOKERY_AGENTBUS_ENDPOINT",
-    "ROOKERY_OPERATOR_TOKEN_SHA256", "OAUTH_NONCE_SECRET", "ROOKERY_KNOT_ADMIN_ADD_MEMBER_URL",
-    "ROOKERY_KNOT_ADMIN_SECRET", "HUB_WEBHOOK_URL", "HUB_WEBHOOK_SECRET", "ROOKERY_LEGACY_HOSTNAMES",
-    "ROOKERY_LEGACY_HANDLE_DOMAINS",
-)
+VAR_NAMES = ENV_VARS
 
 
 class Env:
@@ -340,3 +337,8 @@ class Client:
 
 def query_of(url: str) -> dict:
     return dict(parse_qsl(urlsplit(url).query))
+
+
+if os.environ.get("ROOST_TEST_BACKEND", "fakes") != "fakes":
+    # The same suite on the FastAPI server's storage (see server_env.py).
+    from server_env import ServerTestEnv as Env  # noqa: E402,F811

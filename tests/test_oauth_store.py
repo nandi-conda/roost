@@ -3,7 +3,6 @@
 
 """The OAuth D1 tables: round-trips, atomic consumes, guarded rotation, replay guards."""
 
-import sqlite3
 
 import pytest
 
@@ -74,7 +73,7 @@ async def test_round_trips_every_table(db):
 async def test_rejects_duplicate_refresh_hashes(db):
     session = session_row()
     await store.insert_session(db, session, NOW)
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(Exception, match="UNIQUE constraint failed"):
         await store.insert_session(db, dict(session, session_id=unique("session-b")), NOW)
 
 
