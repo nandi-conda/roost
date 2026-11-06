@@ -50,19 +50,46 @@ cd "$BUNDLE"
 uv sync --frozen -q
 fc() { uv run --frozen fastapi "$@"; }
 
-printf '{"access_token": "%s"}' "$TOKEN" > "$FASTAPI_CLOUD_CLI_CONFIG_DIR/auth.json"
 # `--json` prints {"data": ...} or {"error": {"code", "message"}}; cloud_data.py prints one field of it.
 data() { uv run --frozen python "$REPO/ci/cloud_data.py" "$@"; }
-team=$(fc cloud teams list --json | data 'data["teams"][0]["id"]')
-apps=$(fc cloud apps list --json --team-id "$team")
-read -r app slug url < <(data 'next((" ".join([a["id"], a["slug"], a.get("url") or "-"]) for a in data["apps"] if a["name"] == sys.argv[2] or a["slug"] == sys.argv[2]), "")' "$APP_NAME" <<<"$apps") || true
-if [ -z "${app:-}" ]; then
-  echo "creating app $APP_NAME"
-  read -r app slug < <(fc cloud apps create --team-id "$team" --name "$APP_NAME" --json | data 'data["app"]["id"] + " " + data["app"]["slug"]')
-  url=-
+token_kind=$(python3 - "$TOKEN" <<'PY'
+import base64, json, sys, time
+parts = sys.argv[1].split(".")
+try:
+    claims = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))) if len(parts) == 3 else None
+except ValueError:
+    claims = None
+if claims is None:
+    print("deploy")
+elif claims.get("exp") and claims["exp"] <= time.time():
+    print("expired")
+else:
+    print("user")
+PY
+)
+echo "FASTAPI_TOKEN looks like a $token_kind token"
+if [ "$token_kind" = expired ]; then
+  echo "FASTAPI_TOKEN is an expired user token: log in again (fastapi login) and store the new one" >&2
+  exit 1
 fi
-[ -n "${app:-}" ] || { echo "could not find or create app $APP_NAME" >&2; exit 1; }
-if [ "${url:--}" = "-" ]; then url="https://$slug.fastapicloud.dev"; fi
+if [ "$token_kind" = user ]; then
+  printf '{"access_token": "%s"}' "$TOKEN" > "$FASTAPI_CLOUD_CLI_CONFIG_DIR/auth.json"
+  team=$(fc cloud teams list --json | data 'data["teams"][0]["id"]')
+  apps=$(fc cloud apps list --json --team-id "$team")
+  read -r app slug url < <(data 'next((" ".join([a["id"], a["slug"], a.get("url") or "-"]) for a in data["apps"] if a["name"] == sys.argv[2] or a["slug"] == sys.argv[2]), "")' "$APP_NAME" <<<"$apps") || true
+  if [ -z "${app:-}" ]; then
+    echo "creating app $APP_NAME"
+    read -r app slug < <(fc cloud apps create --team-id "$team" --name "$APP_NAME" --json | data 'data["app"]["id"] + " " + data["app"]["slug"]')
+    url=-
+  fi
+  [ -n "${app:-}" ] || { echo "could not find or create app $APP_NAME" >&2; exit 1; }
+  if [ "${url:--}" = "-" ]; then url="https://$slug.fastapicloud.dev"; fi
+else
+  # An app deploy token deploys one app; FASTAPI_CLOUD_APP_ID names it.
+  export FASTAPI_CLOUD_TOKEN=$TOKEN
+  app=${FASTAPI_CLOUD_APP_ID:?FASTAPI_TOKEN is an app deploy token: also set the FASTAPI_CLOUD_APP_ID secret (the app id from the dashboard)}
+  url="https://${ROOKERY_HOSTNAME:-$APP_NAME.fastapicloud.dev}"
+fi
 host=${ROOKERY_HOSTNAME:-$(python3 -c "import sys, urllib.parse; print(urllib.parse.urlsplit(sys.argv[1]).hostname)" "$url")}
 echo "app $app at https://$host"
 
