@@ -7,6 +7,8 @@ and the blob stores. (The whole suite also runs on the server's storage with
 ROOST_TEST_BACKEND=sqlite|postgres; see server_env.py.)"""
 
 import asyncio
+import os
+from urllib.parse import urlsplit, urlunsplit
 
 import pytest
 from starlette.testclient import TestClient, WebSocketDenialResponse
@@ -15,7 +17,7 @@ from agent import Agent
 from fakes import DEFAULT_VARS, Http, Plc
 from roost import cbor
 from roost_server.app import _static, build_env, create_app
-from roost_server.blobs import DirectoryBlobs, S3Blobs
+from roost_server.blobs import DirectoryBlobs, PostgresBlobs, S3Blobs
 from roost_server.platform import Http as ServerHttp
 from roost_server.sql import SqliteBackend, check_account_id, to_postgres
 from server_env import MemoryBlobs
@@ -204,6 +206,28 @@ def test_s3_blobs(monkeypatch):
         store = S3Blobs("roost-blobs", None, "us-east-1", "key", "secret")
         store._client.create_bucket(Bucket="roost-blobs")
         check_blob_store(store, 3)
+
+
+@pytest.mark.skipif(not os.environ.get("ROOST_TEST_DATABASE_URL"), reason="needs ROOST_TEST_DATABASE_URL")
+def test_postgres_blobs(monkeypatch):
+    import psycopg
+
+    monkeypatch.setattr("roost_server.blobs.LIST_PAGE", 3)
+    admin_url = os.environ["ROOST_TEST_DATABASE_URL"]
+    name = f"roost_blobs_t{os.getpid()}"
+    with psycopg.connect(admin_url, autocommit=True) as connection:
+        connection.execute(f'DROP DATABASE IF EXISTS "{name}"')
+        connection.execute(f'CREATE DATABASE "{name}"')
+    store = PostgresBlobs(urlunsplit(urlsplit(admin_url)._replace(path=f"/{name}")))
+    try:
+        check_blob_store(store, 3)
+        store.put("did:plc:a/50%_x", b"x", "text/plain")
+        assert store.list("did:plc:a/50%", None) == (["did:plc:a/50%_x"], None)
+        assert store.list("did:plc:a/5_", None) == ([], None)
+    finally:
+        store.close()
+        with psycopg.connect(admin_url, autocommit=True) as connection:
+            connection.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
 
 
 # Concurrency (any backend: ROOST_TEST_BACKEND picks the storage behind `env`)

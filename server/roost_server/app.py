@@ -8,7 +8,8 @@ Workers static assets are); the firehose is a websocket route.
 Configuration is the Worker's variables (ROOKERY_HOSTNAME, ...) as
 environment variables, plus storage:
 
-  DATABASE_URL           Postgres (FastAPI Cloud's Neon/Supabase integration sets it)
+  DATABASE_URL           Postgres (FastAPI Cloud's Neon/Supabase integration sets it); blobs go there too
+                         unless S3_BUCKET is set
   ROOST_DATA_DIR         or: a directory for SQLite files (self-hosting, local dev)
   S3_BUCKET, S3_ENDPOINT_URL, S3_REGION, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY
                          blob bytes in S3 or R2 (R2: S3_ENDPOINT_URL=https://<account>.r2.cloudflarestorage.com)
@@ -54,6 +55,7 @@ def build_env(environ: dict, *, backend=None, blob_store=None, http=None) -> Env
     firehose.init_schema()
     env = Env(environ, backend, blob_store, http, firehose)
     env.backend = backend
+    env.blob_store = blob_store
     return env
 
 
@@ -103,6 +105,8 @@ def create_app(environ: dict | None = None, *, env: Env | None = None, public_di
             if env is None:
                 await app.state.env.http.close()
                 app.state.env.backend.close()
+                if hasattr(app.state.env.blob_store, "close"):
+                    app.state.env.blob_store.close()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 

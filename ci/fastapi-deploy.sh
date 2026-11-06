@@ -12,7 +12,7 @@
 # Without DATABASE_URL / S3_BUCKET the app runs on SQLite and blob files under
 # /tmp/roost: EPHEMERAL, lost on every restart or redeploy, one copy per replica.
 # Without OAUTH_NONCE_SECRET one is generated once and kept on the app.
-# ROOKERY_HOSTNAME defaults to the app's own <slug>.fastapicloud.dev host.
+# ROOKERY_HOSTNAME defaults to roost.latha.org (production).
 set -euo pipefail
 APP_NAME=${APP_NAME:-roost}
 export FASTAPI_CLOUD_APP_ID=${FASTAPI_CLOUD_APP_ID:-5f1aae7c-ef4f-46ca-93e5-1456f5587777}  # the "roost" app
@@ -93,7 +93,10 @@ else
   [ -n "$app" ] || { echo "set the FASTAPI_CLOUD_APP_ID secret (the app id from the dashboard)" >&2; exit 1; }
   if [ "${url:--}" = "-" ]; then url="https://${slug:-$APP_NAME}.fastapicloud.dev"; fi
 fi
-host=${ROOKERY_HOSTNAME:-$(python3 -c "import sys, urllib.parse; print(urllib.parse.urlsplit(sys.argv[1]).hostname)" "$url")}
+# Production: the app serves roost.latha.org (cut over from the Worker
+# 2026-11-06); these mirror wrangler.cloudflare.jsonc.
+host=${ROOKERY_HOSTNAME:-roost.latha.org}
+ROOKERY_HANDLE_DOMAIN=${ROOKERY_HANDLE_DOMAIN:-.roost.latha.org}
 echo "app $app at https://$host"
 
 if [ "$token_kind" = user ]; then
@@ -118,15 +121,19 @@ if [ "$token_kind" = user ]; then
 else
   # An app deploy token can't set app variables: ship defaults in the bundle
   # (main.py loads deploy.env; variables set on the app override it).
-  echo "app deploy token: defaults go in deploy.env; set DATABASE_URL, S3_* and OAUTH_NONCE_SECRET on the app to persist"
+  echo "app deploy token: defaults go in deploy.env; set DATABASE_URL, OAUTH_NONCE_SECRET and ROOKERY_OPERATOR_TOKEN_SHA256 on the app"
   {
     echo "ROOKERY_HOSTNAME=$host"
     echo "ROOKERY_HANDLE_DOMAIN=${ROOKERY_HANDLE_DOMAIN:-.$host}"
     echo "ROOKERY_PLC_URL=${ROOKERY_PLC_URL:-https://plc.directory}"
+    echo "ROOKERY_LEGACY_HOSTNAMES=rookery.latha.org"
+    echo "ROOKERY_LEGACY_HANDLE_DOMAINS=.agent.latha.org"
+    echo "ROOKERY_RELAY_HOSTS=bsky.network"
+    echo "CLOUDFLARE_ZONE_ID=18cbd0a8e108d62f7badcb3651cb160b"
     echo "ROOST_DATA_DIR=/tmp/roost"
     echo "OAUTH_NONCE_SECRET=$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
   } > "$BUNDLE/deploy.env"
-  echo "WARNING: unless DATABASE_URL and S3_BUCKET are set on the app, storage is EPHEMERAL (/tmp/roost)"
+  echo "WARNING: unless DATABASE_URL is set on the app, storage is EPHEMERAL (/tmp/roost)"
 fi
 
 fc deploy --app-id "$app"

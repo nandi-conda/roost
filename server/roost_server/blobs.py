@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 sol pbc
 
-"""Blob bytes outside Cloudflare: any S3-compatible bucket (R2 itself works,
-through its S3 API), or a local directory.
+"""Blob bytes outside Cloudflare: a Postgres table (the default when
+DATABASE_URL is set), any S3-compatible bucket (R2 itself works, through its
+S3 API), or a local directory.
 
-Both are synchronous; `AsyncBlobs` gives roost.app the async R2 shape
+All are synchronous; `AsyncBlobs` gives roost.app the async R2 shape
 (get/put/list/delete) by running them in a worker thread, and `InlineBlobs`
 gives the account code (already on a worker thread) the same shape without
 another hop.
@@ -61,6 +62,52 @@ class S3Blobs:
             )
             if result.get("Errors"):
                 raise RuntimeError(f"S3 delete failed for {len(result['Errors'])} blob(s)")
+
+
+class PostgresBlobs:
+    """roost_blobs.blobs in the same database as everything else. Blobs are
+    capped at roost.app.MAX_BLOB_BYTES (60 MB), well under bytea's 1 GB.
+    Its own small pool: account calls hold a connection while they put blobs,
+    so sharing theirs could starve the pool."""
+
+    def __init__(self, url: str, max_connections: int = 4):
+        from psycopg_pool import ConnectionPool
+
+        self._pool = ConnectionPool(url, min_size=1, max_size=max_connections, open=True,
+                                    kwargs={"prepare_threshold": None})
+        with self._pool.connection() as connection:
+            connection.execute('CREATE SCHEMA IF NOT EXISTS roost_blobs')
+            connection.execute('CREATE TABLE IF NOT EXISTS roost_blobs.blobs ('
+                               'key TEXT COLLATE "C" PRIMARY KEY, data BYTEA NOT NULL, content_type TEXT)')
+
+    def get(self, key: str):
+        with self._pool.connection() as connection:
+            row = connection.execute("SELECT data, content_type FROM roost_blobs.blobs WHERE key = %s",
+                                     (key,)).fetchone()
+        return None if row is None else (bytes(row[0]), row[1])
+
+    def put(self, key: str, data: bytes, content_type: str) -> None:
+        with self._pool.connection() as connection:
+            connection.execute(
+                "INSERT INTO roost_blobs.blobs (key, data, content_type) VALUES (%s, %s, %s) "
+                "ON CONFLICT (key) DO UPDATE SET data = excluded.data, content_type = excluded.content_type",
+                (key, bytes(data), content_type))
+
+    def list(self, prefix: str, cursor: str | None):
+        # starts_with, not LIKE: keys may hold % or _.
+        with self._pool.connection() as connection:
+            rows = connection.execute(
+                "SELECT key FROM roost_blobs.blobs WHERE starts_with(key, %s) AND key > %s "
+                "ORDER BY key LIMIT %s", (prefix, cursor or "", LIST_PAGE + 1)).fetchall()
+        keys = [row[0] for row in rows[:LIST_PAGE]]
+        return keys, (keys[-1] if len(rows) > LIST_PAGE else None)
+
+    def delete(self, keys: list[str]) -> None:
+        with self._pool.connection() as connection:
+            connection.execute("DELETE FROM roost_blobs.blobs WHERE key = ANY(%s)", (list(keys),))
+
+    def close(self) -> None:
+        self._pool.close()
 
 
 class DirectoryBlobs:
@@ -138,7 +185,8 @@ class InlineBlobs:
 
 
 def open_blobs(environ: dict):
-    """S3 when S3_BUCKET is set (S3_ENDPOINT_URL for R2 or another provider), else ROOST_BLOB_DIR."""
+    """S3 when S3_BUCKET is set (S3_ENDPOINT_URL for R2 or another provider), else
+    Postgres when DATABASE_URL is set, else ROOST_BLOB_DIR."""
     bucket = environ.get("S3_BUCKET")
     if bucket:
         missing = [name for name in ("S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY") if not environ.get(name)]
@@ -146,9 +194,11 @@ def open_blobs(environ: dict):
             raise ValueError(f"S3_BUCKET is set but {', '.join(missing)} is not")
         return S3Blobs(bucket, environ.get("S3_ENDPOINT_URL"), environ.get("S3_REGION"),
                        environ["S3_ACCESS_KEY_ID"], environ["S3_SECRET_ACCESS_KEY"])
+    if environ.get("DATABASE_URL"):
+        return PostgresBlobs(environ["DATABASE_URL"])
     directory = environ.get("ROOST_BLOB_DIR") or (
         str(Path(environ["ROOST_DATA_DIR"]) / "blobs") if environ.get("ROOST_DATA_DIR") else None
     )
     if not directory:
-        raise ValueError("Set S3_BUCKET (+ S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_ENDPOINT_URL) or ROOST_BLOB_DIR")
+        raise ValueError("Set DATABASE_URL, S3_BUCKET (+ S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_ENDPOINT_URL) or ROOST_BLOB_DIR")
     return DirectoryBlobs(directory)

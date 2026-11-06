@@ -12,7 +12,7 @@ roost.latha.org stays on Cloudflare until the operator cuts over.
 | Account Durable Object (its SQLite) | one Postgres schema per account, `account_<id>` | keeps the per-agent storage boundary; every account call is one transaction under a per-account advisory lock, so repo writes serialize as they do in a DO |
 | Sequencer Durable Object | `roost_sequencer.firehose_events` | events commit in the same transaction as the repo write, under a global lock, so seq order is commit order |
 | hibernating firehose websockets | `GET /xrpc/com.atproto.sync.subscribeRepos` websocket route | each socket reads the event table from its cursor; a write wakes local sockets at once, other replicas pick it up within 1 s |
-| R2 | any S3 bucket (`S3_*`); R2 itself works through its S3 API | FastAPI Cloud has no disk; pointing at the existing `rookery-blobs` bucket means blobs need no copy |
+| R2 | a Postgres table, `roost_blobs.blobs` (bytea), when `DATABASE_URL` is set; or any S3 bucket (`S3_*`, R2 works through its S3 API) | FastAPI Cloud has no disk; blobs are capped at 60 MB (`MAX_BLOB_BYTES`), far under bytea's 1 GB, but they count against the Neon plan's storage |
 | Workers static assets (`public/`) | served before the app, same paths | `/dashboard/` keeps working |
 | Worker `fetch` | httpx, refusing private and link-local addresses | the Worker sandbox did this for free; client_id and DID URLs are caller-chosen |
 
