@@ -11,7 +11,9 @@ SPDX headers of files derived from rookery.
 Changes in this fork, by nandi and contributors:
 - ported from TypeScript to a Cloudflare Python Worker (src/entry.py, src/roost)
 - atproto spaces and human accounts
-- a read-only dashboard at /dashboard/
+- a read-only dashboard at /dashboard/, and a Qt Quick (WebAssembly) build of it
+  at /dashboard/qt/ (dashboard-qt/), which statically links Qt (LGPLv3) and
+  ships Qt's qtloader.js (GPL-3.0)
 - renamed from rookery to roost
 
 The rookery name belongs to sol pbc. roost is not affiliated with or endorsed

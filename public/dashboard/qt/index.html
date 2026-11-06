@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Roost Dashboard</title>
+  <link rel="icon" href="../rookery-icon.svg">
+  <style>
+    :root { --bg: #F6F5F1; --muted: #5C606B; --bad: #B3402E; color-scheme: light dark; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #111317; --muted: #9AA0AC; --bad: #F07A66; } }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); }
+    #screen { position: fixed; inset: 0; }
+    #boot { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 16px; align-items: center;
+      justify-content: center; color: var(--muted); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    #boot.error { color: var(--bad); }
+  </style>
+</head>
+<body>
+  <div id="boot"><img src="../rookery-icon.svg" width="48" height="48" alt=""><span id="status">Loading dashboard…</span>
+    <noscript>The dashboard needs JavaScript and WebAssembly.</noscript></div>
+  <div id="screen"></div>
+  <script src="roostdash.js"></script>
+  <script src="qtloader.js"></script>
+  <script>
+    // Boot the Qt Quick dashboard (dashboard-qt/, built for WebAssembly).
+    const boot = document.getElementById("boot");
+    const status = document.getElementById("status");
+    function fail(text) { boot.style.display = ""; boot.classList.add("error"); status.textContent = text; }
+    qtLoad({
+      qt: {
+        entryFunction: window.roostdash_entry,
+        containerElements: [document.getElementById("screen")],
+        onLoaded: () => { boot.style.display = "none"; },
+        onExit: (e) => fail("The dashboard stopped" + (e.text ? ": " + e.text : ".")),
+      },
+    }).catch((e) => { console.error(e); fail("Couldn't start the dashboard: " + e.message); });
+  </script>
+</body>
+</html>

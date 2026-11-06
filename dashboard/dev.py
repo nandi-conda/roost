@@ -22,7 +22,7 @@ class H(http.server.SimpleHTTPRequestHandler):
         if not s.path.startswith("/xrpc/"):
             return super().do_GET()
         try:
-            r = urllib.request.urlopen(urllib.request.Request(UP + s.path, headers={"accept": "application/json"}))
+            r = urllib.request.urlopen(urllib.request.Request(UP + s.path, headers={"accept": "application/json", "user-agent": "roost-dashboard-dev"}))
             code, body = r.status, r.read()
         except urllib.error.HTTPError as e:
             code, body = e.code, e.read()
