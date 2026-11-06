@@ -12,3 +12,10 @@ name = "migrate"
 branches = ["cutover"]
 timeout = 1800
 run = "bash ci/migrate.sh"
+
+# Push to the "sync-identities" branch to fix PLC documents and handle TXT records.
+[[job]]
+name = "sync-identities"
+branches = ["sync-identities"]
+timeout = 900
+run = "bash ci/sync-identities.sh"

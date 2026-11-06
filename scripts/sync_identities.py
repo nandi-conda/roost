@@ -11,7 +11,9 @@ relays to crawl HOST.
 HOST defaults to https://roost.latha.org. The operator token comes from
 ROOKERY_OPERATOR_TOKEN, or else the file `pixi run cf-operator-token` saved.
 With no DIDs it syncs every repo HOST lists. DIDs whose PLC document already
-names HOST and publishes an #atproto_kem key are skipped, so re-running is safe.
+names HOST and publishes an #atproto_kem key, and whose handle's _atproto TXT
+names them, are skipped, so re-running is safe. (Syncing also rewrites the TXT
+when HOST has CLOUDFLARE_DNS_TOKEN.)
 """
 
 import os
@@ -23,6 +25,13 @@ import httpx
 from migrate_host import RELAYS, list_dids, ok, operator_token
 
 PLC = "https://plc.directory"
+DOH = "https://cloudflare-dns.com/dns-query"
+
+
+def txt_names(http: httpx.Client, handle: str, did: str) -> bool:
+    answer = ok(http.get(DOH, params={"name": f"_atproto.{handle}", "type": "TXT"},
+                         headers={"accept": "application/dns-json"}), f"DNS {handle}").json().get("Answer") or []
+    return any(record.get("data", "").strip('"') == f"did={did}" for record in answer)
 
 
 def main() -> None:
@@ -35,11 +44,13 @@ def main() -> None:
         print(f"syncing {len(dids)} DID(s) to {host}")
         for did in dids:
             doc = ok(http.get(f"{PLC}/{did}/data"), f"PLC {did}").json()
-            if doc["services"]["atproto_pds"]["endpoint"] == host and "atproto_kem" in doc["verificationMethods"]:
-                print(f"{did}: already on {host} with a KEM key")
+            handle = ok(http.get(f"{host}/xrpc/com.atproto.repo.describeRepo", params={"repo": did}),
+                        f"describeRepo {did}").json()["handle"]
+            if doc["services"]["atproto_pds"]["endpoint"] == host and "atproto_kem" in doc["verificationMethods"] \
+                    and txt_names(http, handle, did):
+                print(f"{did}: already on {host} with a KEM key and a TXT record")
                 continue
-            described = ok(http.get(f"{host}/xrpc/com.atproto.repo.describeRepo", params={"repo": did}), f"describeRepo {did}")
-            synced = ok(http.post(f"{host}/operator/identity/sync", json={"did": did, "handle": described.json()["handle"]},
+            synced = ok(http.post(f"{host}/operator/identity/sync", json={"did": did, "handle": handle},
                                   headers=auth), f"identity sync {did}").json()
             print(f"{did}: PLC now names {synced['pds']} as the PDS of {synced['handle']}, with a KEM key")
 
