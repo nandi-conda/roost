@@ -1,11 +1,7 @@
-# Production deploy on every push to main: run the tests, then ship server/ to
-# the FastAPI Cloud app "roost" (roost.latha.org) with ci/fastapi-deploy.sh.
-# The Cloudflare Worker is no longer deployed from CI (`pixi run cf-deploy`
-# still works by hand; its D1/R2 data is kept).
-# Secrets:
-#   FASTAPI_TOKEN            FastAPI Cloud deploy token for the roost app
-#   ROOKERY_OPERATOR_TOKEN   operator token; the app gets its SHA-256 and a derived OAUTH_NONCE_SECRET
-#   DNS_TOKEN                Cloudflare API token, Zone > DNS > Edit on latha.org (handle TXT records)
+# Production deploy on every push to main: run the tests, then ship the Worker
+# (`pixi run cf-deploy`). sync-identities stays a local `just deploy` step so
+# the operator token never leaves the operator's machine.
+# Secret: CLOUDFLARE_API_TOKEN (see docs/cloudflare.md for its permissions).
 name: deploy
 
 on:
@@ -21,11 +17,10 @@ jobs:
   deploy:
     runs-on: depot-ubuntu-latest
     env:
-      FASTAPI_TOKEN: ${{ secrets.FASTAPI_TOKEN }}
-      ROOKERY_OPERATOR_TOKEN: ${{ secrets.ROOKERY_OPERATOR_TOKEN }}
-      DNS_TOKEN: ${{ secrets.DNS_TOKEN }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: 2612967e82750619224e7446c4c41b0b
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - run: uv run pytest -q
-      - run: bash ci/fastapi-deploy.sh
+      - uses: prefix-dev/setup-pixi@v0.8.1
+      - run: pixi run test
+      - run: pixi run cf-deploy

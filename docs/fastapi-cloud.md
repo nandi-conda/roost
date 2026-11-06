@@ -44,9 +44,8 @@ Same variables as `wrangler.cloudflare.jsonc` (`ROOKERY_HOSTNAME`,
 
 ## deploy
 
-GitHub Actions (`.github/workflows/deploy.yml`, on a Depot runner) runs
-`ci/fastapi-deploy.sh` on every push to main. (`.forge/jobs.toml` runs the
-same script on the fileapi forge mirror.) The script bundles `server/`
+CI on the fileapi forge (repo `nandi.uk/roost`, `.forge/jobs.toml`) runs
+`ci/fastapi-deploy.sh` on every push to its main. The script bundles `server/`
 with `src/roost` and `public/`, finds or creates the FastAPI Cloud app `roost`,
 copies the forge secrets onto it, and runs `fastapi deploy`. Forge secrets:
 
@@ -63,8 +62,7 @@ Without `DATABASE_URL` or `S3_BUCKET` the app runs on SQLite and files under
 `/tmp/roost`: ephemeral, lost on every restart, redeploy or scale-to-zero, and
 per replica. Fine for a first look, not for accounts anyone keeps.
 
-roost.latha.org moved from the Worker to this app on 2026-11-06; the Worker is
-no longer deployed from CI.
+GitHub pushes do not trigger it; the Cloudflare Worker deploy is separate.
 
 Local run: `cd server && ROOST_DATA_DIR=/tmp/roost ROOKERY_HOSTNAME=localhost ROOKERY_PLC_URL=https://plc.directory
 ROOKERY_HANDLE_DOMAIN=.localhost OAUTH_NONCE_SECRET=dev uv run fastapi dev`.
