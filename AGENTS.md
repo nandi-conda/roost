@@ -60,7 +60,7 @@ DID/handle resolution, and DPoP are the trust boundary.
 ## Verification
 
 - Always run `uv run pytest -q` before committing — all tests must pass. SQL must run on SQLite (D1, DO) and Postgres (server/): write SQLite's dialect, use `ON CONFLICT` rather than `INSERT OR ...`, and run the suite with `ROOST_TEST_BACKEND=postgres` when SQL changes.
-- **One deploy workflow.** `.github/workflows/deploy.yml` runs the tests and `pixi run cf-deploy` on every push to main, with the `CLOUDFLARE_API_TOKEN` secret. Only that token lives in GitHub Actions: the operator token stays on the operator's machine, so `sync-identities` and other operator scripts still run locally (`just deploy`). Don't add other workflows.
+- **One deploy workflow.** `.github/workflows/deploy.yml` (Depot runner) runs the tests and `ci/fastapi-deploy.sh` on every push to main: production is the FastAPI Cloud app `roost` at roost.latha.org (cut over from the Worker 2026-11-06). Secrets: `FASTAPI_TOKEN`, `ROOKERY_OPERATOR_TOKEN`, `DNS_TOKEN`. Don't add other workflows.
 
 ## File Headers
 
