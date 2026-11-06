@@ -8,6 +8,7 @@
 #   DATABASE_URL         Postgres URL, e.g. Neon's pooled URL
 #   S3_BUCKET, S3_ENDPOINT_URL, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY   blob bucket (R2 works)
 #   OAUTH_NONCE_SECRET, ROOKERY_OPERATOR_TOKEN_SHA256
+#   DNS_TOKEN            Cloudflare API token (Zone DNS Edit, latha.org), becomes CLOUDFLARE_DNS_TOKEN
 #   ROOKERY_OPERATOR_TOKEN  the operator token itself: with an app deploy token, the
 #                        bundle gets its SHA-256 and an OAUTH_NONCE_SECRET derived from it
 # Each secret is copied onto the app (as a FastAPI Cloud secret) before the deploy.
@@ -133,6 +134,8 @@ else
     echo "ROOKERY_RELAY_HOSTS=bsky.network"
     echo "CLOUDFLARE_ZONE_ID=18cbd0a8e108d62f7badcb3651cb160b"
     echo "ROOST_DATA_DIR=/tmp/roost"
+    # Cloudflare API token (Zone DNS Edit on latha.org): signup writes each handle's _atproto TXT.
+    [ -n "${DNS_TOKEN:-}" ] && echo "CLOUDFLARE_DNS_TOKEN=$DNS_TOKEN"
     echo "ROOST_SEQ_FLOOR=10000"  # past the Worker's last firehose seq (227 at cutover), so relay cursors stay valid
     if [ -n "${ROOKERY_OPERATOR_TOKEN:-}" ]; then
       # Stable across deploys; only hashes of the token go in the bundle.
