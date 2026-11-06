@@ -1,9 +1,10 @@
-# fileapi forge CI (nandi.uk/roost): every push to main deploys server/ to FastAPI Cloud.
+# fileapi forge CI (nandi.uk/roost): every push to main deploys server/ to FastAPI Cloud,
+# on a Depot builder (ci/depot-deploy.sh).
 [[job]]
 name = "deploy"
 branches = ["main"]
 timeout = 1800
-run = "bash ci/fastapi-deploy.sh"
+run = "bash ci/depot-deploy.sh"
 
 # Push to the "cutover" branch to copy the Worker's accounts into the app.
 [[job]]

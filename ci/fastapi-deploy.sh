@@ -138,16 +138,16 @@ else
     [ -n "${DNS_TOKEN:-}" ] && echo "CLOUDFLARE_DNS_TOKEN=$DNS_TOKEN"
     echo "ROOST_SEQ_FLOOR=10000"  # past the Worker's last firehose seq (227 at cutover), so relay cursors stay valid
     if [ -n "${ROOKERY_OPERATOR_TOKEN:-}" ]; then
-      # Stable across deploys; only hashes of the token go in the bundle.
-      python3 - <<'PY'
-import hashlib, os
-token = os.environ["ROOKERY_OPERATOR_TOKEN"].encode()
-print("ROOKERY_OPERATOR_TOKEN_SHA256=" + hashlib.sha256(token).hexdigest())
-print("OAUTH_NONCE_SECRET=" + hashlib.sha256(b"roost-oauth-nonce\0" + token).hexdigest())
-PY
-    else
-      echo "OAUTH_NONCE_SECRET=$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+      python3 -c 'import hashlib, os; print("ROOKERY_OPERATOR_TOKEN_SHA256=" + hashlib.sha256(os.environ["ROOKERY_OPERATOR_TOKEN"].encode()).hexdigest())'
     fi
+    # The OAUTH_NONCE_SECRET secret, else one derived from the operator token
+    # (stable across deploys), else a new one per deploy.
+    python3 - <<'PY'
+import hashlib, os, secrets
+token = os.environ.get("ROOKERY_OPERATOR_TOKEN", "").encode()
+derived = hashlib.sha256(b"roost-oauth-nonce\0" + token).hexdigest() if token else secrets.token_hex(32)
+print("OAUTH_NONCE_SECRET=" + (os.environ.get("OAUTH_NONCE_SECRET") or derived))
+PY
   } > "$BUNDLE/deploy.env"
   echo "WARNING: unless DATABASE_URL is set on the app, storage is EPHEMERAL (/tmp/roost)"
 fi

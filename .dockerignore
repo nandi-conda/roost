@@ -1,0 +1,7 @@
+.git
+.venv
+**/.venv
+node_modules
+**/__pycache__
+.wrangler
+python_modules
