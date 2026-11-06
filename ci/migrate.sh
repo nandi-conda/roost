@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Copy every account from the Cloudflare Worker into the FastAPI app
 # (scripts/migrate_host.py). Runs from the forge on a push to the "cutover"
-# branch; safe to re-run (accounts already moved are skipped).
+# branch; safe to re-run (accounts already moved are skipped). FROM is the
+# Worker by its rookery.latha.org alias, since roost.latha.org reaches the app.
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$(mktemp -d)
@@ -12,5 +13,5 @@ if ! command -v uv >/dev/null; then
 fi
 export UV_PROJECT_ENVIRONMENT="$WORK/venv" UV_CACHE_DIR="$WORK/uv-cache"
 cd "$REPO"
-FROM=${FROM:-https://roost.latha.org} TO=${TO:-https://roost.fastapicloud.dev} \
+FROM=${FROM:-https://rookery.latha.org} TO=${TO:-https://roost.fastapicloud.dev} \
   uv run --frozen --no-dev --with httpx python scripts/migrate_host.py
