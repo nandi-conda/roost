@@ -7,3 +7,4 @@ tests/.keycache/
 .venv/
 python_modules/
 .pytest_cache/
+server/deploy.env

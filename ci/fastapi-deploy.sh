@@ -15,6 +15,7 @@
 # ROOKERY_HOSTNAME defaults to the app's own <slug>.fastapicloud.dev host.
 set -euo pipefail
 APP_NAME=${APP_NAME:-roost}
+export FASTAPI_CLOUD_APP_ID=${FASTAPI_CLOUD_APP_ID:-5f1aae7c-ef4f-46ca-93e5-1456f5587777}  # the "roost" app
 TOKEN=${FASTAPI_TOKEN:?FASTAPI_TOKEN secret is not set (a FastAPI Cloud user token)}
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$(mktemp -d)
@@ -115,9 +116,17 @@ if [ "$token_kind" = user ]; then
     setvar OAUTH_NONCE_SECRET "$(python3 -c 'import secrets; print(secrets.token_hex(32))')" --secret
   fi
 else
-  echo "an app deploy token can't set app variables; set them in the dashboard (Environment Variables):"
-  echo "  ROOKERY_HOSTNAME=$host ROOKERY_HANDLE_DOMAIN=.$host ROOKERY_PLC_URL=https://plc.directory"
-  echo "  OAUTH_NONCE_SECRET=<random hex, secret>, and DATABASE_URL + S3_* (or ROOST_DATA_DIR=/tmp/roost, ephemeral)"
+  # An app deploy token can't set app variables: ship defaults in the bundle
+  # (main.py loads deploy.env; variables set on the app override it).
+  echo "app deploy token: defaults go in deploy.env; set DATABASE_URL, S3_* and OAUTH_NONCE_SECRET on the app to persist"
+  {
+    echo "ROOKERY_HOSTNAME=$host"
+    echo "ROOKERY_HANDLE_DOMAIN=${ROOKERY_HANDLE_DOMAIN:-.$host}"
+    echo "ROOKERY_PLC_URL=${ROOKERY_PLC_URL:-https://plc.directory}"
+    echo "ROOST_DATA_DIR=/tmp/roost"
+    echo "OAUTH_NONCE_SECRET=$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+  } > "$BUNDLE/deploy.env"
+  echo "WARNING: unless DATABASE_URL and S3_BUCKET are set on the app, storage is EPHEMERAL (/tmp/roost)"
 fi
 
 fc deploy --app-id "$app"
